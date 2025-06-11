@@ -48,3 +48,6 @@ mypy>=1.6.0          # Type checking
 # === Monitoring & Logging ===
 loguru>=0.7.2        # Better logging
 psutil>=5.9.0        # System monitoring
+
+# === for KEY ===
+python-dotenv

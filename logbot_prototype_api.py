@@ -25,6 +25,11 @@ from langchain.chains import RetrievalQA  # Chain สำหรับ Q&A
 from langchain.text_splitter import RecursiveCharacterTextSplitter  # แบ่งข้อความ
 from langchain_core.documents import Document  # โครงสร้างเอกสาร
 from langchain.prompts import PromptTemplate  # Template สำหรับ Prompt
+from dotenv import load_dotenv # สำหรับ .env
+
+# โหลดไฟล์ .env
+load_dotenv()
+api_key = os.getenv("API_KEY")
 
 # === เริ่มต้น AI Models ===
 # สร้าง Embedding Model สำหรับแปลงข้อความเป็น Vector
@@ -35,7 +40,7 @@ embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-Mi
 # llama3-70b-8192 เป็นโมเดลขนาดใหญ่ที่มีความสามารถสูง
 llm = ChatGroq(
     model="llama3-70b-8192",
-    groq_api_key="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",  # API Key
+    groq_api_key=api_key,  # API Key
     temperature=0.1,  # ค่าต่ำ = คำตอบที่สม่ำเสมอและแม่นยำ
     max_tokens=2048   # จำกัดความยาวของคำตอบ
 )
