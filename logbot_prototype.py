@@ -1,26 +1,24 @@
 # === โหลดไลบรารีที่จำเป็น ===
-import gradio as gr  # สำหรับสร้าง Web UI
-import json  # สำหรับจัดการไฟล์ JSON
-import csv   # สำหรับจัดการไฟล์ CSV
-import re    # สำหรับ Regular Expression
-from io import StringIO  # สำหรับจัดการ string เป็น file
-from datetime import datetime  # สำหรับจัดการวันที่และเวลา
-from langchain_community.vectorstores import FAISS  # Vector database สำหรับเก็บข้อมูล
-from langchain_huggingface import HuggingFaceEmbeddings  # Model สำหรับแปลงข้อความเป็น vector
-from langchain_ollama import OllamaLLM as Ollama  # LLM Model จาก Ollama
-from langchain.chains import RetrievalQA  # Chain สำหรับ RAG (Retrieval Augmented Generation)
-from langchain.text_splitter import RecursiveCharacterTextSplitter  # สำหรับแบ่งข้อความ
-from langchain_core.documents import Document  # Class สำหรับจัดเก็บเอกสาร
-from langchain.prompts import PromptTemplate  # สำหรับสร้าง prompt template
+import gradio as gr
+import json
+import csv
+import re
+from io import StringIO
+from datetime import datetime
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_ollama import OllamaLLM as Ollama
+from langchain.chains import RetrievalQA
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
+from langchain.prompts import PromptTemplate
 
-# === STEP 1: เริ่มต้น embedding model และ LLM ===
-# สร้าง embedding model สำหรับแปลงข้อความเป็น vector เพื่อค้นหา
+# === เริ่มต้น Models ===
 embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-# สร้าง LLM model ด้วย Ollama พร้อมตั้งค่าสำหรับการวิเคราะห์ความปลอดภัย
 llm = Ollama(
-    model="phi3:mini",  # ใช้โมเดล phi3:mini
-    temperature=0.1,   # ลดความสุ่มเพื่อความแม่นยำในการตอบ
+    model="phi3:mini",
+    temperature=0.1,
     system_message="""
     You are an expert SOC (Security Operations Center) Analyst AI specialized in cybersecurity threat detection.
     Your expertise includes:
@@ -39,30 +37,21 @@ llm = Ollama(
     """
 )
 
-# === STEP 2: ฟังก์ชันสำหรับแปลงไฟล์และจัดการ pattern recognition ===
+# === ฟังก์ชันจัดการไฟล์ (เหมือนเดิม) ===
 def parse_uploaded_file(file_obj):
-    """
-    ฟังก์ชันสำหรับอ่านและแปลงไฟล์ที่อัปโหลด
-    รองรับไฟล์ประเภท: JSON, CSV, LOG, TXT
-    """
     try:
-        # จัดการกับรูปแบบไฟล์ Gradio ที่แตกต่างกัน
         if hasattr(file_obj, 'name') and isinstance(file_obj.name, str):
-            # รูปแบบ Gradio ใหม่ - file_obj เป็น path ของไฟล์
             filename_lower = file_obj.name.lower()
             with open(file_obj.name, 'r', encoding='utf-8') as f:
                 content = f.read()
         elif hasattr(file_obj, 'read'):
-            # รูปแบบ Gradio เก่า - file_obj มี method read
             content = file_obj.read().decode("utf-8")
             filename_lower = file_obj.name.lower() if hasattr(file_obj, "name") else ""
         elif isinstance(file_obj, str):
-            # ไฟล์ path เป็น string
             filename_lower = file_obj.lower()
             with open(file_obj, 'r', encoding='utf-8') as f:
                 content = f.read()
         else:
-            # พยายามดึง path จาก object
             file_path = str(file_obj)
             filename_lower = file_path.lower()
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -72,23 +61,19 @@ def parse_uploaded_file(file_obj):
 
     log_lines = []
 
-    # จัดการไฟล์ JSON
     if filename_lower.endswith('.json'):
         try:
             data = json.loads(content)
             if isinstance(data, list):
-                # กรณีที่ JSON เป็น array
                 for item in data:
                     if isinstance(item, str):
                         log_lines.append(item.strip())
                     elif isinstance(item, dict):
-                        # แปลง JSON object เป็นรูปแบบ log ที่อ่านง่าย
                         formatted_line = format_json_log(item)
                         log_lines.append(formatted_line)
                     else:
                         log_lines.append(str(item).strip())
             elif isinstance(data, dict):
-                # กรณีที่ JSON เป็น object เดียว
                 formatted_line = format_json_log(data)
                 log_lines.append(formatted_line)
             else:
@@ -96,21 +81,17 @@ def parse_uploaded_file(file_obj):
         except Exception as e:
             return [], f"🔴 ไฟล์ JSON ไม่ถูกต้อง: {str(e)}"
 
-    # จัดการไฟล์ CSV
     elif filename_lower.endswith('.csv'):
         try:
             csv_file = StringIO(content)
             reader = csv.DictReader(csv_file)
-            headers = reader.fieldnames
             for row in reader:
-                # แปลง CSV row เป็นรูปแบบ log entry
                 formatted_row = " | ".join([f"{k}:{v}" for k, v in row.items() if v])
                 if formatted_row:
                     log_lines.append(formatted_row)
         except Exception as e:
             return [], f"🔴 ไฟล์ CSV ไม่ถูกต้อง: {str(e)}"
 
-    # จัดการไฟล์ LOG และ TXT
     elif filename_lower.endswith(('.log', '.txt')) or not filename_lower:
         log_lines = [line.strip() for line in content.splitlines() if line.strip()]
     else:
@@ -119,26 +100,18 @@ def parse_uploaded_file(file_obj):
     if not log_lines:
         return [], "⚠️ ไม่พบข้อมูล log ในไฟล์ที่อัปโหลด"
 
-    # ปรับปรุงการประมวลผล log เพื่อการวิเคราะห์ที่ดีขึ้น
     processed_logs = preprocess_logs(log_lines)
     return processed_logs, None
 
 def format_json_log(json_obj):
-    """
-    ฟังก์ชันสำหรับจัดรูปแบบ JSON log entry ให้อ่านง่ายขึ้น
-    จัดลำดับฟิลด์สำคัญไว้ด้านหน้า
-    """
-    # ฟิลด์ที่สำคัญสำหรับการวิเคราะห์ความปลอดภัย
     important_fields = ['timestamp', 'time', 'datetime', 'source_ip', 'src_ip', 'ip', 
                        'user', 'username', 'event', 'action', 'status', 'message', 'error']
     
     formatted_parts = []
-    # เพิ่มฟิลด์สำคัญก่อน
     for field in important_fields:
         if field in json_obj:
             formatted_parts.append(f"{field}:{json_obj[field]}")
     
-    # เพิ่มฟิลด์ที่เหลือ
     for k, v in json_obj.items():
         if k not in important_fields:
             formatted_parts.append(f"{k}:{v}")
@@ -146,30 +119,23 @@ def format_json_log(json_obj):
     return " | ".join(formatted_parts)
 
 def preprocess_logs(log_lines):
-    """
-    ฟังก์ชันสำหรับปรับปรุง log ให้เหมาะสำหรับการวิเคราะห์ความปลอดภัย
-    เพิ่มข้อมูลที่สำคัญเช่น IP address, timestamp, คำสำคัญด้านความปลอดภัย
-    """
     processed = []
     
     for line in log_lines:
         if not line.strip():
             continue
             
-        # เพิ่มข้อมูลสำคัญเข้าไปใน log
         enhanced_line = line
         
-        # ดึง IP addresses
         ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
         ips = re.findall(ip_pattern, line)
         if ips:
             enhanced_line += f" | EXTRACTED_IPS:{','.join(ips)}"
         
-        # ดึง timestamps หลายรูปแบบ
         timestamp_patterns = [
-            r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}',  # 2024-01-01T10:30:45 หรือ 2024-01-01 10:30:45
-            r'\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2}',      # 01/01/2024 10:30:45
-            r'\w{3} \d{2} \d{2}:\d{2}:\d{2}'            # Jan 01 10:30:45
+            r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}',
+            r'\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2}',
+            r'\w{3} \d{2} \d{2}:\d{2}:\d{2}'
         ]
         
         for pattern in timestamp_patterns:
@@ -178,7 +144,6 @@ def preprocess_logs(log_lines):
                 enhanced_line += f" | TIMESTAMP:{timestamps[0]}"
                 break
         
-        # ทำเครื่องหมายเหตุการณ์ที่อาจเป็นปัญหาความปลอดภัย
         security_keywords = ['failed', 'error', 'denied', 'blocked', 'suspicious', 
                            'malware', 'virus', 'attack', 'intrusion', 'unauthorized',
                            'breach', 'violation', 'alert', 'warning']
@@ -191,24 +156,11 @@ def preprocess_logs(log_lines):
     
     return processed
 
-# === STEP 3: ฟังก์ชันวิเคราะห์ log ด้วย AI - เวอร์ชันที่แก้ไขแล้ว ===
-def analyze_logs(message, history, logs):
-    """
-    ฟังก์ชันหลักสำหรับวิเคราะห์ log ด้วย AI
-    ใช้ RAG (Retrieval Augmented Generation) เพื่อค้นหาข้อมูลที่เกี่ยวข้องและวิเคราะห์
-    
-    Args:
-        message: ข้อความคำถามจากผู้ใช้
-        history: ประวัติการสนทนา (list of tuples)
-        logs: ข้อมูล log ที่จะวิเคราะห์
-    """
+# === ฟังก์ชันวิเคราะห์ (เหมือนเดิม) ===
+def analyze_logs(message, logs):
     if logs is None or not logs:
-        return "📝 กรุณาอัปโหลดไฟล์ log ก่อนครับ"
+        return "📁 กรุณาอัปโหลดไฟล์ log ก่อนถามคำถาม"
 
-    # ดึงคำถามปัจจุบันจากข้อความ
-    question = message
-
-    # สร้าง documents พร้อม metadata สำหรับแต่ละบรรทัด log
     documents = []
     for i, log_line in enumerate(logs):
         if log_line.strip():
@@ -220,21 +172,18 @@ def analyze_logs(message, history, logs):
     if not documents:
         return "⚠️ ไม่พบข้อมูล log ที่สามารถใช้ได้ในไฟล์ที่อัปโหลด"
 
-    # ใช้ recursive splitter เพื่อแบ่งข้อมูลให้เหมาะสม
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=300,      # ขนาดชิ้นข้อมูลแต่ละชิ้น
-        chunk_overlap=50,    # ส่วนที่ทับซ้อนกันระหว่างชิ้นข้อมูล
-        separators=["\n", "|", " ", ""]  # ตัวแบ่งข้อมูล
+        chunk_size=300,
+        chunk_overlap=50,
+        separators=["\n", "|", " ", ""]
     )
     split_docs = splitter.split_documents(documents)
 
     if not split_docs:
         split_docs = documents
 
-    # สร้าง vector store สำหรับการค้นหาข้อมูลที่เกี่ยวข้อง
     vectorstore = FAISS.from_documents(split_docs, embedding_model)
 
-    # สร้าง prompt template ที่ปรับปรุงแล้วสำหรับการวิเคราะห์ความปลอดภัย
     template = """
     คุณกำลังวิเคราะห์ log ความปลอดภัยในฐานะนักวิเคราะห์ SOC โปรดให้การวิเคราะห์ที่ครอบคลุมจาก log entries ที่ค้นพบ
     
@@ -272,135 +221,162 @@ def analyze_logs(message, history, logs):
         input_variables=["context", "question"]
     )
 
-    # สร้าง RAG chain พร้อม custom prompt
     rag_chain = RetrievalQA.from_chain_type(
         llm=llm,
-        retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),  # ค้นหา 5 ชิ้นข้อมูลที่เกี่ยวข้องที่สุด
+        retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),
         chain_type="stuff",
         return_source_documents=True,
         chain_type_kwargs={"prompt": prompt}
     )
 
     try:
-        # รันการวิเคราะห์
-        result = rag_chain.invoke({"query": question})
+        result = rag_chain.invoke({"query": message})
         return result.get("result", "⚠️ ไม่ได้รับผลการวิเคราะห์จาก AI")
     except Exception as e:
         return f"🔴 เกิดข้อผิดพลาดในการวิเคราะห์: {str(e)}"
 
-# === STEP 4: Enhanced UI พร้อมการติดตามสถานะที่ดีขึ้น ===
-log_state = gr.State()         # เก็บสถานะของ log ที่โหลด
-analysis_history = gr.State([])  # เก็บประวัติการวิเคราะห์
-
-def load_log_file(file_obj):
-    """
-    ฟังก์ชันสำหรับโหลดไฟล์ log และแสดงสถานะ
-    """
-    if file_obj is None:
-        return "📝 กรุณาอัปโหลดไฟล์ log ก่อนครับ", None, "📊 ยังไม่มี logs"
+# === ฟังก์ชันสำหรับการแชท (แบบ ChatGPT) ===
+def process_message(message, history, logs):
+    """ประมวลผลข้อความและสร้างการตอบกลับ"""
+    if not message.strip():
+        return history, ""
     
-    # แปลงไฟล์และจัดการข้อมูล
-    logs, error = parse_uploaded_file(file_obj)
+    # เพิ่มข้อความของผู้ใช้เข้าไปในประวัติ
+    history.append([message, None])
+    
+    # วิเคราะห์และสร้างคำตอบ
+    response = analyze_logs(message, logs)
+    
+    # อัปเดตคำตอบในประวัติ
+    history[-1][1] = response
+    
+    return history, ""
+
+def upload_and_process_file(file):
+    """ประมวลผลไฟล์ที่อัปโหลดและแสดงสถานะ"""
+    if file is None:
+        return None, "❌ กรุณาเลือกไฟล์ที่ต้องการอัปโหลด"
+    
+    logs, error = parse_uploaded_file(file)
     if error:
-        return error, None, "❌ โหลดไม่สำเร็จ"
+        return None, error
     
     log_count = len(logs)
-    status_msg = f"✅ โหลด {log_count} รายการ log สำเร็จแล้ว! พร้อมสำหรับการวิเคราะห์!"
-    stats_msg = f"📊 โหลด {log_count} รายการ log แล้ว"
+    success_message = f"✅ อัปโหลดสำเร็จ! พบ {log_count:,} รายการ log พร้อมสำหรับการวิเคราะห์"
     
-    return status_msg, logs, stats_msg
+    return logs, success_message
 
-def get_log_statistics(logs):
+# === สร้าง UI แบบ ChatGPT ===
+with gr.Blocks(
+    title="🛡️ SOC Analysis AI", 
+    theme=gr.themes.Soft(),
+    css="""
+    .gradio-container {
+        max-width: 900px !important;
+        margin: 0 auto !important;
+    }
+    .chat-container {
+        height: 600px !important;
+    }
+    .file-upload {
+        border: 2px dashed #ccc !important;
+        border-radius: 10px !important;
+        padding: 20px !important;
+        text-align: center !important;
+    }
     """
-    ฟังก์ชันสำหรับคำนวณและแสดงสถิติของ log
-    """
-    if not logs:
-        return "📊 ยังไม่มี logs"
+) as demo:
     
-    total_lines = len(logs)
-    # นับจำนวน IP ที่ไม่ซ้ำกัน
-    ip_count = len(set(re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', ' '.join(logs))))
+    # เก็บสถานะ
+    logs_state = gr.State(None)
     
-    # นับเหตุการณ์ที่อาจเป็นปัญหาความปลอดภัย
-    security_keywords = ['failed', 'error', 'denied', 'blocked', 'suspicious']
-    security_events = sum(1 for log in logs if any(kw in log.lower() for kw in security_keywords))
-    
-    return f"📊 สถิติ: {total_lines} รายการ | {ip_count} IP ไม่ซ้ำ | {security_events} เหตุการณ์ที่อาจเป็นปัญหาความปลอดภัย"
-
-# === STEP 5: สร้าง Gradio Interface ที่ปรับปรุงแล้ว ===
-with gr.Blocks(title="🛡️ SOC Analysis Chatbot", theme=gr.themes.Soft()) as demo:
-    # หัวข้อและคำอธิบาย
+    # หัวข้อ
     gr.Markdown("""
-    # 🛡️ **ระบบวิเคราะห์ Log ความปลอดภัยด้วย AI**
-    อัปโหลดไฟล์ log ความปลอดภัย (`.json`, `.csv`, `.log`, `.txt`) และรับการวิเคราะห์ภัยคุกคามจากผู้เชี่ยวชาญ AI
+    # 🛡️ **SOC Analysis AI Assistant**
+    อัปโหลดไฟล์ log และถามคำถามเกี่ยวกับความปลอดภัย
     """)
-
-    # ส่วนอัปโหลดไฟล์
+    
+    # ส่วนอัปโหลดไฟล์แบบกะทัดรัด
     with gr.Row():
-        file_input = gr.File(
-            label="📁 อัปโหลด Security Logs", 
-            file_types=['.json', '.csv', '.log', '.txt'],
-            height=200,
-            scale=2
+        with gr.Column(scale=3):
+            file_upload = gr.File(
+                label="📁 ลากไฟล์มาวางหรือคลิกเพื่อเลือก",
+                file_types=['.json', '.csv', '.log', '.txt'],
+                elem_classes="file-upload"
+            )
+    with gr.Column(scale=1):
+        upload_btn = gr.Button("📤 อัปโหลด", variant="primary", size="lg")
+    
+    # แสดงสถานะการอัปโหลด
+    upload_status = gr.Textbox(
+        label="📊 สถานะ", 
+        interactive=False,
+        value="🔄 รอการอัปโหลดไฟล์...",
+        show_label=False
+    )
+    
+    gr.Markdown("---")
+    
+    # ส่วนแชทแบบ ChatGPT
+    with gr.Column():
+        chatbot = gr.Chatbot(
+            label="💬 แชทกับ SOC Analyst AI",
+            height=500,
+            show_label=False,
+            placeholder="การสนทนาจะปรากฏที่นี่...",
+            elem_classes="chat-container"
+        )
+        
+        with gr.Row():
+            message_box = gr.Textbox(
+                placeholder="พิมพ์คำถามเกี่ยวกับ log ของคุณ... (เช่น 'มีการโจมตี brute force หรือไม่?')",
+                container=False,
+                scale=4,
+                show_label=False
+            )
+            send_button = gr.Button("📨", variant="primary", scale=1, min_width=50)
+    
+    # ตัวอย่างคำถาม
+    with gr.Row():
+        gr.Examples(
+            examples=[
+                "มีการโจมตี brute force หรือไม่?",
+                "IP ไหนที่น่าสงสัยที่สุด?",
+                "มีความผิดปกติในการเข้าสู่ระบบหรือไม่?",
+                "วิเคราะห์ภัยคุกคามโดยรวม",
+                "แสดงสถิติการโจมตีตามเวลา"
+            ],
+            inputs=message_box,
+            label="💡 ตัวอย่างคำถาม"
         )
     
-    # ปุ่มโหลด logs
-    load_btn = gr.Button("📥 โหลด Logs", variant="primary", size="lg", scale=1)
-
-    # ส่วนแสดงสถานะการโหลด
-    with gr.Accordion("ℹ️ สถานะการโหลด Log", open=True):
-        upload_status = gr.Textbox(label="📋 สถานะ", interactive=False)
-        log_stats = gr.Textbox(label="📊 สถิติ Log", interactive=False)
-
-    # ใช้ state เพื่อเก็บ logs ที่โหลดไว้
-    log_state = gr.State([])
-
-    gr.Markdown("---")
-
-    # ส่วนแชทบอท
-    chatbot = gr.Chatbot(label="🔬 แชทวิเคราะห์ SOC", height=1000)
-    message_input = gr.Textbox(
-        label="🧠 ถามเกี่ยวกับภัยคุกคามความปลอดภัย", 
-        placeholder="เช่น มีการโจมตี brute-force หรือไม่?", 
-        lines=1
+    # เชื่อมต่อฟังก์ชัน
+    upload_btn.click(
+        fn=upload_and_process_file,
+        inputs=file_upload,
+        outputs=[logs_state, upload_status]
     )
-    send_btn = gr.Button("🔍 วิเคราะห์", variant="secondary")
-
-    # การทำงานหลังจากกดปุ่มโหลด logs
-    load_btn.click(
-        fn=load_log_file,
-        inputs=file_input,
-        outputs=[upload_status, log_state, log_stats]
+    
+    # การส่งข้อความ
+    def submit_message(message, history, logs):
+        return process_message(message, history, logs)
+    
+    send_button.click(
+        fn=submit_message,
+        inputs=[message_box, chatbot, logs_state],
+        outputs=[chatbot, message_box]
+    )
+    
+    message_box.submit(
+        fn=submit_message,
+        inputs=[message_box, chatbot, logs_state],
+        outputs=[chatbot, message_box]
     )
 
-    # ฟังก์ชันสำหรับการแชทและวิเคราะห์
-    def chat_analyze(message, chat_history, logs):
-        """
-        ฟังก์ชันสำหรับจัดการการแชทและเรียกใช้การวิเคราะห์
-        """
-        reply = analyze_logs(message, chat_history, logs)
-        chat_history.append((message, reply))
-        return "", chat_history
-
-    # การทำงานของปุ่มวิเคราะห์
-    send_btn.click(
-        fn=chat_analyze,
-        inputs=[message_input, chatbot, log_state],
-        outputs=[message_input, chatbot]
-    )
-
-    # การทำงานเมื่อกด Enter ในช่องข้อความ
-    message_input.submit(
-        fn=chat_analyze,
-        inputs=[message_input, chatbot, log_state],
-        outputs=[message_input, chatbot]
-    )
-
-# รันแอปพลิเคชัน
 if __name__ == "__main__":
     demo.launch(
-        share=False,           # ไม่แชร์ public link
-        server_name="0.0.0.0", # รันบนทุก network interface
-        server_port=7860,      # พอร์ตที่ใช้รัน
-        show_error=True        # แสดงข้อผิดพลาดหากมี
+        share=False,
+        server_name="0.0.0.0",
+        server_port=7860,
+        show_error=True
     )

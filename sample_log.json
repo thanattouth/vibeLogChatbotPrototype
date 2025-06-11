@@ -1,0 +1,26 @@
+[
+    {
+        "timestamp": "2025-06-11T08:30:00Z",
+        "level": "INFO",
+        "source": "auth",
+        "message": "User admin logged in from IP 192.168.1.10"
+    },
+    {
+        "timestamp": "2025-06-11T08:32:15Z",
+        "level": "WARNING",
+        "source": "auth",
+        "message": "Failed login attempt for user root from IP 192.168.1.11"
+    },
+    {
+        "timestamp": "2025-06-11T08:33:00Z",
+        "level": "ERROR",
+        "source": "firewall",
+        "message": "Blocked incoming connection from suspicious IP 10.0.0.5 on port 22"
+    },
+    {
+        "timestamp": "2025-06-11T08:35:47Z",
+        "level": "INFO",
+        "source": "system",
+        "message": "Scheduled backup completed successfully"
+    }
+]
