@@ -41,17 +41,16 @@ pip install -r requirements.txt
 การใช้งาน
 1. ติดตั้งและโหลดโมเดลจาก Ollama
 
-ติดตั้ง Ollama:
-https://ollama.com
-
-เปิด Ollama:
-ollama serve
-
-โหลดโมเดล phi3:mini:
-ollama pull phi3:mini
+ติดตั้ง Ollama: https://ollama.com หรือ ผ่าน terminal(MacOS) homebrew
+เปิด Ollama: ollama serve
+โหลดโมเดล phi3:mini: ollama pull phi3:mini
 
 2. รันโปรแกรม
+
 python logbot_prototype.py
+
 Gradio UI จะเปิดที่ http://0.0.0.0:7860 โดยอัตโนมัติ
+
+---
 
 MIT License © 2025 Thanattouth
