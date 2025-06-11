@@ -42,7 +42,9 @@ pip install -r requirements.txt
 1. ติดตั้งและโหลดโมเดลจาก Ollama
 
 ติดตั้ง Ollama: https://ollama.com หรือ ผ่าน terminal(MacOS) homebrew
+
 เปิด Ollama: ollama serve
+
 โหลดโมเดล phi3:mini: ollama pull phi3:mini
 
 2. รันโปรแกรม
