@@ -1,186 +1,191 @@
-# === โหลดไลบรารีที่จำเป็น ===
+# === Enhanced SOC Analysis AI Assistant ===
 import os
 import warnings
+import streamlit as st
+from streamlit_chat import message as st_message
+import pandas as pd
+import plotly.express as px
+from datetime import datetime, timedelta
 
-# แก้ไข HuggingFace tokenizers warning เพื่อป้องกันข้อความเตือนที่ไม่จำเป็น
+# Environment configuration
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-# ปิด warnings ที่ไม่จำเป็นเพื่อให้ console สะอาด
+os.environ["STREAMLIT_SERVER_ENABLE_WATCHER"] = "false"
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-# นำเข้าไลบรารีสำหรับการสร้าง Web UI และการประมวลผลข้อมูล
-import gradio as gr
+# Import libraries
 import json
 import csv
 import re
 from io import StringIO
 from datetime import datetime
+from typing import List, Dict, Tuple, Optional
 
-# นำเข้าไลบรารี LangChain สำหรับ RAG (Retrieval-Augmented Generation)
-from langchain_community.vectorstores import FAISS  # Vector Database
-from langchain_huggingface import HuggingFaceEmbeddings  # Embedding Model
-from langchain_groq import ChatGroq  # LLM จาก Groq
-from langchain.chains import RetrievalQA  # Chain สำหรับ Q&A
-from langchain.text_splitter import RecursiveCharacterTextSplitter  # แบ่งข้อความ
-from langchain_core.documents import Document  # โครงสร้างเอกสาร
-from langchain.prompts import PromptTemplate  # Template สำหรับ Prompt
-from dotenv import load_dotenv # สำหรับ .env
+# LangChain imports
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_groq import ChatGroq
+from langchain.chains import RetrievalQA
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
+from langchain.prompts import PromptTemplate
+from langchain.callbacks import StreamlitCallbackHandler
+from dotenv import load_dotenv
 
-# โหลดไฟล์ .env
+# Load environment variables
 load_dotenv()
 api_key = os.getenv("API_KEY")
 
-# === เริ่มต้น AI Models ===
-# สร้าง Embedding Model สำหรับแปลงข้อความเป็น Vector
-# all-MiniLM-L6-v2 เป็นโมเดลที่เล็ก รวดเร็ว และให้ผลลัพธ์ดี
-embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+# === Constants ===
+SUPPORTED_FILE_TYPES = ['.json', '.csv', '.log', '.txt']
+SECURITY_KEYWORDS = [
+    'failed', 'error', 'denied', 'blocked', 'suspicious', 
+    'malware', 'virus', 'attack', 'intrusion', 'unauthorized',
+    'breach', 'violation', 'alert', 'warning', 'critical',
+    'exploit', 'injection', 'phishing', 'ransomware', 'compromise'
+]
 
-# สร้าง Large Language Model จาก Groq API
-# llama3-70b-8192 เป็นโมเดลขนาดใหญ่ที่มีความสามารถสูง
-llm = ChatGroq(
-    model="llama3-70b-8192",
-    groq_api_key=api_key,  # API Key
-    temperature=0.1,  # ค่าต่ำ = คำตอบที่สม่ำเสมอและแม่นยำ
-    max_tokens=2048   # จำกัดความยาวของคำตอบ
-)
+THREAT_LEVELS = {
+    'critical': {'color': '#FF0000', 'description': 'Immediate action required'},
+    'high': {'color': '#FF4500', 'description': 'High priority investigation needed'},
+    'medium': {'color': '#FFA500', 'description': 'Should be investigated'},
+    'low': {'color': '#FFFF00', 'description': 'Monitor for patterns'},
+    'none': {'color': '#008000', 'description': 'No threat detected'}
+}
 
-# === ฟังก์ชันจัดการไฟล์ ===
-def parse_uploaded_file(file_obj):
+# === AI Model Initialization ===
+@st.cache_resource
+def load_embedding_model():
+    """Load and cache the embedding model"""
+    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+@st.cache_resource
+def load_llm_model():
+    """Load and cache the LLM model"""
+    return ChatGroq(
+        model="llama3-70b-8192",
+        groq_api_key=api_key,
+        temperature=0.1,
+        max_tokens=4096  # Increased token limit for more detailed analysis
+    )
+
+# === File Processing Functions ===
+def parse_uploaded_file(file_obj) -> Tuple[List[str], Optional[str]]:
     """
-    ฟังก์ชันสำหรับอ่านและประมวลผลไฟล์ที่อัปโหลด
-    รองรับไฟล์ .json, .csv, .log, .txt
+    Process uploaded log files with improved error handling and support for larger files
     
     Args:
-        file_obj: ไฟล์ที่อัปโหลดจาก Gradio
+        file_obj: Uploaded file object
         
     Returns:
-        tuple: (processed_logs, error_message)
+        Tuple of (processed_logs, error_message)
     """
     try:
-        # ตรวจสอบประเภทของ file object และอ่านเนื้อหา
+        # Handle different file object types
         if hasattr(file_obj, 'name') and isinstance(file_obj.name, str):
-            # กรณีไฟล์มีชื่อและเป็น string
             filename_lower = file_obj.name.lower()
-            with open(file_obj.name, 'r', encoding='utf-8') as f:
-                content = f.read()
+            content = file_obj.read().decode("utf-8")
         elif hasattr(file_obj, 'read'):
-            # กรณีไฟล์เป็น file-like object
             content = file_obj.read().decode("utf-8")
             filename_lower = file_obj.name.lower() if hasattr(file_obj, "name") else ""
-        elif isinstance(file_obj, str):
-            # กรณีไฟล์เป็น path string
-            filename_lower = file_obj.lower()
-            with open(file_obj, 'r', encoding='utf-8') as f:
-                content = f.read()
         else:
-            # กรณีอื่นๆ แปลงเป็น string path
-            file_path = str(file_obj)
-            filename_lower = file_path.lower()
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+            return [], "Unsupported file object type"
+            
+        # Process based on file type
+        if filename_lower.endswith('.json'):
+            return process_json_file(content)
+        elif filename_lower.endswith('.csv'):
+            return process_csv_file(content)
+        elif filename_lower.endswith(('.log', '.txt')):
+            return process_text_file(content)
+        else:
+            return [], f"Unsupported file type. Supported types: {', '.join(SUPPORTED_FILE_TYPES)}"
+            
     except Exception as e:
-        return [], f"🔴 ไม่สามารถอ่านไฟล์ได้: {str(e)}"
+        return [], f"Error processing file: {str(e)}"
 
-    log_lines = []
-
-    # ประมวลผลตามประเภทไฟล์
-    if filename_lower.endswith('.json'):
-        """ประมวลผลไฟล์ JSON"""
-        try:
-            data = json.loads(content)
-            if isinstance(data, list):
-                # กรณี JSON เป็น array
-                for item in data:
-                    if isinstance(item, str):
-                        log_lines.append(item.strip())
-                    elif isinstance(item, dict):
-                        # แปลง dict เป็นรูปแบบที่อ่านง่าย
-                        formatted_line = format_json_log(item)
-                        log_lines.append(formatted_line)
-                    else:
-                        log_lines.append(str(item).strip())
-            elif isinstance(data, dict):
-                # กรณี JSON เป็น object เดียว
-                formatted_line = format_json_log(data)
-                log_lines.append(formatted_line)
-            else:
-                # กรณีอื่นๆ แปลงเป็น string
-                log_lines.append(str(data).strip())
-        except Exception as e:
-            return [], f"🔴 ไฟล์ JSON ไม่ถูกต้อง: {str(e)}"
-
-    elif filename_lower.endswith('.csv'):
-        """ประมวลผลไฟล์ CSV"""
-        try:
-            csv_file = StringIO(content)
-            reader = csv.DictReader(csv_file)
-            for row in reader:
-                # รวมคอลัมน์ทั้งหมดเป็นบรรทัดเดียว
-                formatted_row = " | ".join([f"{k}:{v}" for k, v in row.items() if v])
-                if formatted_row:
-                    log_lines.append(formatted_row)
-        except Exception as e:
-            return [], f"🔴 ไฟล์ CSV ไม่ถูกต้อง: {str(e)}"
-
-    elif filename_lower.endswith(('.log', '.txt')) or not filename_lower:
-        """ประมวลผลไฟล์ Text/Log"""
-        # แบ่งเป็นบรรทัดและกรองบรรทัดว่าง
-        log_lines = [line.strip() for line in content.splitlines() if line.strip()]
-    else:
-        return [], "⚠️ รูปแบบไฟล์ไม่รองรับ ใช้ .json, .csv, .log, หรือ .txt"
-
-    # ตรวจสอบว่ามีข้อมูล log หรือไม่
-    if not log_lines:
-        return [], "⚠️ ไม่พบข้อมูล log ในไฟล์ที่อัปโหลด"
-
-    # ประมวลผลและเสริมข้อมูล log
-    processed_logs = preprocess_logs(log_lines)
-    return processed_logs, None
-
-def format_json_log(json_obj):
-    """
-    ฟังก์ชันจัดรูปแบบ JSON log ให้เป็น structured format
-    
-    Args:
-        json_obj (dict): JSON object ที่ต้องการจัดรูปแบบ
+def process_json_file(content: str) -> Tuple[List[str], Optional[str]]:
+    """Process JSON files with improved structure handling"""
+    try:
+        data = json.loads(content)
+        log_lines = []
         
-    Returns:
-        str: Log ที่จัดรูปแบบแล้ว
-    """
-    # กำหนดฟิลด์สำคัญที่ต้องการแสดงก่อน
-    important_fields = ['timestamp', 'time', 'datetime', 'source_ip', 'src_ip', 'ip', 
-                       'user', 'username', 'event', 'action', 'status', 'message', 'error']
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, str):
+                    log_lines.append(item.strip())
+                elif isinstance(item, dict):
+                    log_lines.append(format_json_log(item))
+                else:
+                    log_lines.append(str(item).strip())
+        elif isinstance(data, dict):
+            log_lines.append(format_json_log(data))
+        else:
+            log_lines.append(str(data).strip())
+            
+        return preprocess_logs(log_lines), None
+        
+    except json.JSONDecodeError as e:
+        return [], f"Invalid JSON format: {str(e)}"
+
+def process_csv_file(content: str) -> Tuple[List[str], Optional[str]]:
+    """Process CSV files with improved handling of different formats"""
+    try:
+        csv_file = StringIO(content)
+        reader = csv.DictReader(csv_file)
+        log_lines = []
+        
+        for row in reader:
+            # Handle both dict-style and list-style CSV rows
+            if isinstance(row, dict):
+                formatted_row = " | ".join([f"{k}:{v}" for k, v in row.items() if v])
+            else:
+                formatted_row = " | ".join([str(field) for field in row if field])
+                
+            if formatted_row:
+                log_lines.append(formatted_row)
+                
+        return preprocess_logs(log_lines), None
+        
+    except Exception as e:
+        return [], f"CSV processing error: {str(e)}"
+
+def process_text_file(content: str) -> Tuple[List[str], Optional[str]]:
+    """Process text/log files with improved line handling"""
+    log_lines = [line.strip() for line in content.splitlines() if line.strip()]
+    return preprocess_logs(log_lines), None
+
+def format_json_log(json_obj: Dict) -> str:
+    """Enhanced JSON log formatting with better field ordering"""
+    important_fields = [
+        'timestamp', 'time', 'datetime', 'date',
+        'source_ip', 'src_ip', 'ip', 'destination_ip', 'dst_ip',
+        'user', 'username', 'account', 'email',
+        'event', 'action', 'status', 'severity',
+        'message', 'error', 'exception', 'stacktrace'
+    ]
     
     formatted_parts = []
     
-    # เพิ่มฟิลด์สำคัญก่อน
+    # Add important fields first
     for field in important_fields:
         if field in json_obj:
-            formatted_parts.append(f"{field}:{json_obj[field]}")
+            value = json_obj[field]
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=False)
+            formatted_parts.append(f"{field}:{value}")
     
-    # เพิ่มฟิลด์อื่นๆ ที่เหลือ
+    # Add remaining fields
     for k, v in json_obj.items():
         if k not in important_fields:
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v, ensure_ascii=False)
             formatted_parts.append(f"{k}:{v}")
     
     return " | ".join(formatted_parts)
 
-def preprocess_logs(log_lines):
-    """
-    ฟังก์ชันเสริมข้อมูล log เพื่อให้ AI วิเคราะห์ได้ดีขึ้น
-    
-    การเสริมข้อมูลที่ทำ:
-    1. สกัด IP addresses
-    2. ระบุ timestamps ในรูปแบบต่างๆ
-    3. ตรวจหา security keywords
-    
-    Args:
-        log_lines (list): รายการ log lines ดิบ
-        
-    Returns:
-        list: Log lines ที่เสริมข้อมูลแล้ว
-    """
+def preprocess_logs(log_lines: List[str]) -> List[str]:
+    """Enhanced log preprocessing with more security indicators"""
     processed = []
     
     for line in log_lines:
@@ -189,32 +194,30 @@ def preprocess_logs(log_lines):
             
         enhanced_line = line
         
-        # 1. สกัด IP addresses ด้วย Regular Expression
-        ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'  # Pattern สำหรับ IPv4
-        ips = re.findall(ip_pattern, line)
+        # Extract IP addresses (IPv4 and IPv6)
+        ipv4_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
+        ipv6_pattern = r'\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b'
+        ips = re.findall(ipv4_pattern, line) + re.findall(ipv6_pattern, line)
         if ips:
             enhanced_line += f" | EXTRACTED_IPS:{','.join(ips)}"
         
-        # 2. ระบุ timestamps ในรูปแบบต่างๆ
+        # Extract and classify timestamps
         timestamp_patterns = [
-            r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}',  # ISO format: 2024-01-15T10:30:45
-            r'\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2}',     # US format: 01/15/2024 10:30:45
-            r'\w{3} \d{2} \d{2}:\d{2}:\d{2}'            # Syslog format: Jan 15 10:30:45
+            (r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?', 'ISO8601'),
+            (r'\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2}', 'US_DATE'),
+            (r'\w{3} \d{2} \d{2}:\d{2}:\d{2}', 'SYSLOG'),
+            (r'\d{10,13}', 'UNIX_TS')
         ]
         
-        for pattern in timestamp_patterns:
-            timestamps = re.findall(pattern, line)
-            if timestamps:
-                enhanced_line += f" | TIMESTAMP:{timestamps[0]}"
-                break  # หยุดเมื่อเจอ timestamp รูปแบบแรก
+        for pattern, fmt in timestamp_patterns:
+            matches = re.findall(pattern, line)
+            if matches:
+                enhanced_line += f" | TIMESTAMP:{matches[0]} | TIMESTAMP_FORMAT:{fmt}"
+                break
         
-        # 3. ตรวจหา Security Keywords ที่บ่งบอกถึงภัยคุกคาม
-        security_keywords = ['failed', 'error', 'denied', 'blocked', 'suspicious', 
-                           'malware', 'virus', 'attack', 'intrusion', 'unauthorized',
-                           'breach', 'violation', 'alert', 'warning']
-        
-        # หาคำสำคัญที่พบใน log line
-        found_keywords = [kw for kw in security_keywords if kw.lower() in line.lower()]
+        # Detect security indicators
+        found_keywords = [kw for kw in SECURITY_KEYWORDS 
+                         if re.search(rf'\b{kw}\b', line, re.IGNORECASE)]
         if found_keywords:
             enhanced_line += f" | SECURITY_INDICATORS:{','.join(found_keywords)}"
         
@@ -222,302 +225,514 @@ def preprocess_logs(log_lines):
     
     return processed
 
-# === ฟังก์ชันวิเคราะห์ด้วย AI ===
-def analyze_logs(message, logs):
-    """
-    ฟังก์ชันหลักสำหรับวิเคราะห์ logs ด้วย AI
-    ใช้เทคโนโลยี RAG (Retrieval-Augmented Generation)
+# === Log Analysis Functions ===
+def analyze_logs_with_rag(message: str, logs: List[str]) -> str:
+    """Enhanced RAG-based log analysis with better error handling"""
+    if 'vectorstore' not in st.session_state:
+        return "⚠️ Please upload log files first"
     
-    Args:
-        message (str): คำถามจากผู้ใช้
-        logs (list): รายการ log entries ที่ประมวลผลแล้ว
-        
-    Returns:
-        str: ผลการวิเคราะห์จาก AI
-    """
-    # ตรวจสอบว่ามี logs หรือไม่
-    if logs is None or not logs:
-        return "📁 กรุณาอัปโหลดไฟล์ log ก่อนถามคำถาม"
-
-    # ขั้นตอนที่ 1: แปลง log lines เป็น Document objects
+    vectorstore = st.session_state.vectorstore
+    llm = st.session_state.llm
+    
+    # Convert logs to documents with enhanced metadata
     documents = []
     for i, log_line in enumerate(logs):
         if log_line.strip():
-            documents.append(Document(
-                page_content=log_line.strip(),  # เนื้อหาของ log
-                metadata={"line_number": i+1, "source": "uploaded_logs"}  # ข้อมูลเพิ่มเติม
-            ))
+            # Extract metadata from log line
+            metadata = {
+                "line_number": i+1,
+                "source": "uploaded_logs",
+                "timestamp": extract_timestamp_from_log(log_line),
+                "security_indicators": extract_security_indicators(log_line),
+                "ip_addresses": extract_ips_from_log(log_line)
+            }
+            documents.append(Document(page_content=log_line.strip(), metadata=metadata))
     
-    # ตรวจสอบว่ามี documents หรือไม่
     if not documents:
-        return "⚠️ ไม่พบข้อมูล log ที่สามารถใช้ได้ในไฟล์ที่อัปโหลด"
+        return "⚠️ No valid log data found in uploaded file"
 
-    # ขั้นตอนที่ 2: แบ่งข้อความเป็นชิ้นเล็กๆ สำหรับการประมวลผล
+    # Enhanced text splitting with better chunking
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=300,    # แต่ละชิ้นมีความยาวไม่เกิน 300 ตัวอักษร
-        chunk_overlap=50,  # ซ้อนทับกัน 50 ตัวอักษรเพื่อไม่ให้ข้อมูลขาดหาย
-        separators=["\n", "|", " ", ""]  # ตัวแบ่งตามลำดับความสำคัญ
+        chunk_size=500,
+        chunk_overlap=100,
+        separators=["\n", "|", ";", " ", ""]
     )
-    split_docs = splitter.split_documents(documents)
+    split_docs = splitter.split_documents(documents) or documents
+    
+    # Create vectorstore if not exists or update if exists
+    if 'vectorstore' not in st.session_state:
+        st.session_state.vectorstore = FAISS.from_documents(split_docs, st.session_state.embedding_model)
+    else:
+        st.session_state.vectorstore.add_documents(split_docs)
 
-    # หากแบ่งไม่ได้ ให้ใช้ documents เดิม
-    if not split_docs:
-        split_docs = documents
-
-    # ขั้นตอนที่ 3: สร้าง Vector Database ด้วย FAISS
-    # แปลง documents เป็น vectors แล้วเก็บใน database
-    vectorstore = FAISS.from_documents(split_docs, embedding_model)
-
-    # ขั้นตอนที่ 4: กำหนด System Prompt สำหรับ SOC Analyst
+    # Enhanced system prompt for SOC analysis
     system_prompt = """
-    คุณคือนักวิเคราะห์ SOC (Security Operations Center) AI ผู้เชี่ยวชาญด้านการตรวจจับภัยคุกคามไซเบอร์ระดับสูง ภารกิจของคุณคือการวิเคราะห์ log ความปลอดภัยอย่างละเอียดแม่นยำ และให้ข้อมูลเชิงลึกที่สามารถนำไปปฏิบัติได้ทันที.
+    You are an advanced AI SOC (Security Operations Center) Analyst specializing in comprehensive cyber threat detection and analysis. Your mission is to provide detailed, actionable insights from security logs with high accuracy.
 
-    ความเชี่ยวชาญของคุณครอบคลุมถึง:
-    - การตรวจจับการโจมตีแบบ Brute-force, DDoS, การสแกนพอร์ต, และรูปแบบการล็อกอินที่ผิดปกติ.
-    - การระบุ IP Address ที่เป็นอันตราย, โดเมนที่น่าสงสัย, และพฤติกรรมเครือข่ายที่ไม่พึงประสงค์.
-    - การวิเคราะห์ความล้มเหลวในการยืนยันตัวตน, การยกระดับสิทธิ์ (Privilege Escalation), และการเข้าถึงที่ไม่ได้รับอนุญาต.
-    - การรับรู้ลายเซ็นของมัลแวร์, การพยายามเจาะข้อมูล (Data Exfiltration), และกิจกรรมด้านความปลอดภัยที่ไม่ปกติอื่นๆ.
-    - การให้ข้อมูลที่อ้างอิงจาก log โดยตรงเท่านั้น และระบุระดับความเชื่อมั่นในการวิเคราะห์.
+    Key capabilities:
+    - Advanced threat pattern recognition (APT, zero-day, lateral movement)
+    - Correlation of events across multiple log sources
+    - Timeline reconstruction of security incidents
+    - Risk scoring based on MITRE ATT&CK framework
+    - Detailed remediation recommendations
 
-    **กฎการตอบกลับที่เข้มงวด:**
-    1.  **การจัดประเภทภัยคุกคาม:** ต้องระบุระดับภัยคุกคามอย่างชัดเจน: 'วิกฤต (Critical)', 'สูง (High)', 'ปานกลาง (Medium)', 'ต่ำ (Low)' หรือ 'ไม่พบภัยคุกคาม (No Threat Detected)'. พร้อมเหตุผลประกอบ.
-    2.  **หลักฐานจาก Log:** ต้องอ้างอิงและแสดงส่วนของ log entries ที่เกี่ยวข้องโดยตรง พร้อมระบุ `timestamp` และ `line_number` (หากมี) อย่างชัดเจน. ห้ามสร้างข้อมูลที่ไม่ปรากฏใน log.
-    3.  **การดำเนินการที่แนะนำ:** ต้องเสนอแนวทางการตอบสนองเหตุการณ์ที่ปฏิบัติได้จริงและเป็นขั้นตอน (เช่น การบล็อก IP, การตรวจสอบ User Account, การกักกันระบบ).
-    4.  **การประเมินความเสี่ยงและผลกระทบ:** ประเมินผลกระทบที่อาจเกิดขึ้นและระดับความเร่งด่วนของการดำเนินการ.
-    5.  **ความน่าเชื่อถือ:** ระบุระดับความเชื่อมั่นในการวิเคราะห์ของคุณ (เช่น สูง, ปานกลาง, ต่ำ) หากข้อมูลไม่เพียงพอ.
-
-    โปรดตอบกลับเป็นภาษาไทย และปฏิบัติตามกฎข้างต้นอย่างเคร่งครัด.
+    **Strict Response Format:**
+    1. **Threat Assessment**:
+       - Classification: [Critical/High/Medium/Low/Informational]
+       - Confidence: [High/Medium/Low]
+       - MITRE ATT&CK Tactic: [Relevant tactic if applicable]
+    
+    2. **Evidence**:
+       - Log excerpts with line numbers
+       - Timeline of events
+       - Indicators of Compromise (IOCs)
+    
+    3. **Actionable Recommendations**:
+       - Immediate containment
+       - Investigation steps
+       - Long-term mitigation
+    
+    4. **Contextual Analysis**:
+       - Potential impact
+       - Business risk assessment
+       - Related historical incidents
+    
+    Provide responses in clear, structured markdown in Thai language.
     """
 
-    # ขั้นตอนที่ 5: สร้าง Prompt Template
-    template = f"""
+    prompt_template = f"""
     {system_prompt}
 
-    คุณกำลังวิเคราะห์ log ความปลอดภัยในฐานะนักวิเคราะห์ SOC โปรดให้การวิเคราะห์ที่ครอบคลุมจาก log entries ที่ค้นพบตามกฎที่กำหนดไว้.
-
-    ข้อมูลจาก logs ที่เกี่ยวข้อง:
+    **Log Context**:
     {{context}}
 
-    คำถาม: {{question}}
+    **User Question**:
+    {{question}}
 
-    โปรดให้การวิเคราะห์ในรูปแบบนี้:
-
-    🔍 **การวิเคราะห์ภัยคุกคาม:**
-    - **ระดับภัยคุกคาม:** [วิกฤต (Critical)/สูง (High)/ปานกลาง (Medium)/ต่ำ (Low)/ไม่พบภัยคุกคาม (No Threat Detected)] (พร้อมเหตุผลสนับสนุน)
-    - **ประเภทภัยคุกคาม:** [เช่น Brute Force, DDoS, Malware, Unauthorized Access, Suspicious Activity, etc.]
-
-    📋 **ผลการตรวจสอบและหลักฐาน:**
-    - โปรดระบุ log entries ที่น่าสงสัยหรือเกี่ยวข้องโดยตรง พร้อมระบุ `timestamp` และ `line_number` (ถ้ามี).
-    - อธิบายรูปแบบหรือพฤติกรรมที่ผิดปกติที่พบ.
-    - หลักฐานที่พบ: [เช่น IP ต้นทาง, User Account ที่เกี่ยวข้อง, Method ที่ใช้, ลำดับเวลาของเหตุการณ์, Error Code, etc.]
-
-    ⚡ **การดำเนินการที่แนะนำ:**
-    - **การตอบสนองทันที:** [ขั้นตอนที่ควรดำเนินการทันที เช่น Block IP, Reset Password, Isolate System]
-    - **มาตรการระยะยาว:** [ข้อเสนอแนะเพื่อป้องกันในอนาคต เช่น Implement MFA, Update IPS/IDS Signatures, Security Awareness Training]
-
-    🔗 **ตัวบ่งชี้และผลกระทบ:**
-    - **ตัวบ่งชี้การบุกรุก (IOCs):** [เช่น IP Address, Domain, Hash Values ที่น่าสงสัย]
-    - **การประเมินผลกระทบที่อาจเกิดขึ้น:** [เช่น Data Breach, System Downtime, Financial Loss, Reputational Damage]
-    - **ความน่าเชื่อถือของการวิเคราะห์:** [สูง/ปานกลาง/ต่ำ] (เนื่องจาก [เหตุผล: เช่น ข้อมูลเพียงพอ/ข้อมูลจำกัด/ต้องการข้อมูลเพิ่มเติม])
+    **Required Analysis**:
+    - Comprehensive threat evaluation
+    - Detailed evidence from logs
+    - Actionable recommendations
+    - Risk assessment
     """
 
-    # สร้าง PromptTemplate object
     prompt = PromptTemplate(
-        template=template,
+        template=prompt_template,
         input_variables=["context", "question"]
     )
 
-    # ขั้นตอนที่ 6: สร้าง RAG Chain
-    rag_chain = RetrievalQA.from_chain_type(
-        llm=llm,  # Large Language Model
-        retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),  # ค้นหา 5 รายการที่เกี่ยวข้องที่สุด
-        chain_type="stuff",  # วิธีการรวม documents
-        return_source_documents=True,  # ส่งคืน source documents ด้วย
-        chain_type_kwargs={"prompt": prompt}  # ใช้ prompt ที่กำหนด
+    # Enhanced retrieval configuration
+    retriever = vectorstore.as_retriever(
+        search_type="mmr",  # Max marginal relevance for better diversity
+        search_kwargs={
+            "k": 8,  # Increased number of retrieved documents
+            "score_threshold": 0.7  # Minimum relevance score
+        }
     )
 
-    # ขั้นตอนที่ 7: เรียกใช้ RAG Chain เพื่อได้คำตอบ
+    # Configure RAG chain with streaming
+    rag_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        chain_type="stuff",
+        retriever=retriever,
+        return_source_documents=True,
+        chain_type_kwargs={
+            "prompt": prompt,
+            "verbose": True
+        }
+    )
+
     try:
-        result = rag_chain.invoke({"query": message})
-        return result.get("result", "⚠️ ไม่ได้รับผลการวิเคราะห์จาก AI")
+        # Use callback handler for streaming response
+        st_callback = StreamlitCallbackHandler(st.container())
+        result = rag_chain.invoke(
+            {"query": message},
+            config={"callbacks": [st_callback]}
+        )
+        
+        # Enhanced result processing
+        response = result.get("result", "No analysis result received")
+        source_docs = result.get("source_documents", [])
+        
+        # Add source references to response
+        if source_docs:
+            response += "\n\n**References:**\n"
+            for i, doc in enumerate(source_docs, 1):
+                line_num = doc.metadata.get('line_number', 'N/A')
+                response += f"{i}. Line {line_num}: {doc.page_content[:200]}...\n"
+        
+        return response
+        
     except Exception as e:
-        return f"🔴 เกิดข้อผิดพลาดในการวิเคราะห์: {str(e)}\n\nกรุณาตรวจสอบ API Key หรือการเชื่อมต่อเครือข่าย"
+        return f"🔴 Analysis error: {str(e)}\n\nPlease check your API key and network connection"
 
-# === ฟังก์ชันสำหรับการแชท ===
-def process_message(message, history, logs):
-    """
-    ฟังก์ชันประมวลผลข้อความและสร้างการตอบกลับแบบ ChatGPT
+# === Helper Functions ===
+def extract_timestamp_from_log(log_line: str) -> Optional[str]:
+    """Extract and normalize timestamp from log line"""
+    patterns = [
+        r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}',
+        r'\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2}',
+        r'\w{3} \d{2} \d{2}:\d{2}:\d{2}',
+        r'\d{10,13}'
+    ]
     
-    Args:
-        message (str): ข้อความจากผู้ใช้
-        history (list): ประวัติการสนทนา
-        logs (list): ข้อมูล log ที่อัปโหลด
+    for pattern in patterns:
+        match = re.search(pattern, log_line)
+        if match:
+            return match.group()
+    return None
+
+def extract_ips_from_log(log_line: str) -> List[str]:
+    """Extract IP addresses from log line"""
+    ipv4_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
+    ipv6_pattern = r'\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b'
+    return re.findall(ipv4_pattern, log_line) + re.findall(ipv6_pattern, log_line)
+
+def extract_security_indicators(log_line: str) -> List[str]:
+    """Extract security indicators from log line"""
+    return [kw for kw in SECURITY_KEYWORDS if re.search(rf'\b{kw}\b', log_line, re.IGNORECASE)]
+
+def generate_log_statistics(logs: List[str]) -> Dict:
+    """Generate comprehensive log statistics"""
+    stats = {
+        'total_entries': len(logs),
+        'timestamps': 0,
+        'ip_addresses': 0,
+        'security_alerts': 0,
+        'error_messages': 0
+    }
+    
+    for log in logs:
+        if extract_timestamp_from_log(log):
+            stats['timestamps'] += 1
+        if extract_ips_from_log(log):
+            stats['ip_addresses'] += 1
+        if extract_security_indicators(log):
+            stats['security_alerts'] += 1
+        if 'error' in log.lower():
+            stats['error_messages'] += 1
+            
+    return stats
+
+# === Visualization Functions ===
+def plot_timeline(logs: List[str]):
+    """Create an interactive timeline visualization"""
+    timeline_data = []
+    
+    for i, log in enumerate(logs):
+        ts = extract_timestamp_from_log(log)
+        if ts:
+            try:
+                # Try to parse different timestamp formats
+                if re.match(r'\d{10,13}', ts):  # Unix timestamp
+                    dt = datetime.fromtimestamp(int(ts[:10]))
+                else:
+                    dt = datetime.strptime(ts.split('.')[0], '%Y-%m-%d %H:%M:%S')
+                
+                timeline_data.append({
+                    'timestamp': dt,
+                    'content': log[:100] + '...' if len(log) > 100 else log,
+                    'line_number': i+1,
+                    'has_security': bool(extract_security_indicators(log))
+                })
+            except:
+                continue
+    
+    if timeline_data:
+        df = pd.DataFrame(timeline_data)
+        fig = px.scatter(
+            df,
+            x='timestamp',
+            y='line_number',
+            color='has_security',
+            hover_data=['content'],
+            title='Log Entry Timeline',
+            labels={'timestamp': 'Time', 'line_number': 'Log Sequence'}
+        )
+        fig.update_traces(marker=dict(size=8))
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("No timestamp data available for timeline visualization")
+
+def plot_threat_distribution(logs: List[str]):
+    """Visualize threat distribution in logs"""
+    threat_counts = {kw: 0 for kw in SECURITY_KEYWORDS}
+    
+    for log in logs:
+        for kw in extract_security_indicators(log):
+            threat_counts[kw] += 1
+    
+    threat_data = [{'keyword': k, 'count': v} for k, v in threat_counts.items() if v > 0]
+    
+    if threat_data:
+        df = pd.DataFrame(threat_data)
+        fig = px.bar(
+            df,
+            x='keyword',
+            y='count',
+            title='Security Threat Distribution',
+            color='count',
+            color_continuous_scale='reds'
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No security threats detected in logs")
+
+# === Streamlit UI ===
+def initialize_session_state():
+    """Initialize all session state variables"""
+    if 'logs' not in st.session_state:
+        st.session_state.logs = None
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+    if 'vectorstore' not in st.session_state:
+        st.session_state.vectorstore = None
+    if 'llm' not in st.session_state:
+        st.session_state.llm = load_llm_model()
+    if 'embedding_model' not in st.session_state:
+        st.session_state.embedding_model = load_embedding_model()
+    if 'analysis_mode' not in st.session_state:
+        st.session_state.analysis_mode = "basic"
+    if 'selected_example' not in st.session_state:
+        st.session_state.selected_example = ""
+
+def render_file_upload_section():
+    """Render the file upload section with enhanced UI"""
+    with st.expander("📁 Upload Log Files", expanded=True):
+        uploaded_file = st.file_uploader(
+            "Drag and drop or click to select log files",
+            type=SUPPORTED_FILE_TYPES,
+            accept_multiple_files=True,
+            key="file_uploader"
+        )
         
-    Returns:
-        tuple: (updated_history, empty_message_box)
-    """
-    # ตรวจสอบว่ามีข้อความหรือไม่
-    if not message.strip():
-        return history, ""
-    
-    # เพิ่มข้อความของผู้ใช้เข้าไปในประวัติ [user_message, ai_response]
-    history.append([message, None])
-    
-    # วิเคราะห์และสร้างคำตอบด้วย AI
-    response = analyze_logs(message, logs)
-    
-    # อัปเดตคำตอบของ AI ในประวัติ
-    history[-1][1] = response
-    
-    # ส่งคืน history ที่อัปเดตแล้วและล้าง message box
-    return history, ""
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button("📤 Process Files", type="primary"):
+                process_uploaded_files(uploaded_file)
+        with col2:
+            st.session_state.analysis_mode = st.selectbox(
+                "Analysis Mode",
+                ["Basic", "Advanced", "Forensic"],
+                key="mode_select"
+            )
 
-def upload_and_process_file(file):
-    """
-    ฟังก์ชันประมวลผลไฟล์ที่อัปโหลดและแสดงสถานะ
-    
-    Args:
-        file: ไฟล์ที่อัปโหลดจาก Gradio
+def process_uploaded_files(uploaded_files):
+    """Process uploaded files with progress feedback"""
+    if not uploaded_files:
+        st.warning("Please select at least one file")
+        return
         
-    Returns:
-        tuple: (processed_logs, status_message)
-    """
-    # ตรวจสอบว่ามีไฟล์หรือไม่
-    if file is None:
-        return None, "❌ กรุณาเลือกไฟล์ที่ต้องการอัปโหลด"
-    
-    # ประมวลผลไฟล์
-    logs, error = parse_uploaded_file(file)
-    if error:
-        return None, error
-    
-    # แสดงสถานะการอัปโหลดสำเร็จ
-    log_count = len(logs)
-    success_message = f"✅ อัปโหลดสำเร็จ! พบ {log_count:,} รายการ log พร้อมสำหรับการวิเคราะห์"
-    
-    return logs, success_message
+    with st.spinner("Processing files..."):
+        all_logs = []
+        progress_bar = st.progress(0)
+        
+        for i, uploaded_file in enumerate(uploaded_files):
+            progress_bar.progress((i + 1) / len(uploaded_files))
+            logs, error = parse_uploaded_file(uploaded_file)
+            if error:
+                st.error(f"Error in {uploaded_file.name}: {error}")
+            else:
+                all_logs.extend(logs)
+        
+        if all_logs:
+            st.session_state.logs = all_logs
+            create_vectorstore(all_logs)
+            
+            # Show statistics
+            stats = generate_log_statistics(all_logs)
+            st.success(f"✅ Processed {len(uploaded_files)} file(s) with {stats['total_entries']:,} log entries")
+            
+            # Display quick stats - CHANGED FROM EXPANDER TO REGULAR DISPLAY
+            st.subheader("📊 Quick Statistics")
+            cols = st.columns(4)
+            cols[0].metric("Total Entries", stats['total_entries'])
+            cols[1].metric("With Timestamps", stats['timestamps'])
+            cols[2].metric("With IPs", stats['ip_addresses'])
+            cols[3].metric("Security Alerts", stats['security_alerts'])
+                
+            # Visualizations
+            plot_timeline(all_logs)
+            plot_threat_distribution(all_logs)
 
-# === สร้าง User Interface ด้วย Gradio ===
-with gr.Blocks(
-    title="🛡️ SOC Analysis AI (Powered by Groq Deepseek)", 
-    theme=gr.themes.Soft(),  # ธีมที่นุ่มนวล
-    css="""
-    .gradio-container {
-        max-width: 900px !important;
-        margin: 0 auto !important;
-    }
-    .chat-container {
-        height: 600px !important;
-    }
-    .file-upload {
-        border: 2px dashed #ccc !important;
-        border-radius: 10px !important;
-        padding: 20px !important;
-        text-align: center !important;
-    }
-    """
-) as demo:
+def create_vectorstore(logs: List[str]):
+    """Create or update the vectorstore with new logs"""
+    documents = []
+    for i, log_line in enumerate(logs):
+        if log_line.strip():
+            metadata = {
+                "line_number": i+1,
+                "source": "uploaded_logs",
+                "timestamp": extract_timestamp_from_log(log_line),
+                "security_indicators": extract_security_indicators(log_line),
+                "ip_addresses": extract_ips_from_log(log_line)
+            }
+            documents.append(Document(page_content=log_line.strip(), metadata=metadata))
     
-    # สร้าง State สำหรับเก็บข้อมูล logs
-    logs_state = gr.State(None)
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,
+        chunk_overlap=100,
+        separators=["\n", "|", ";", " ", ""]
+    )
+    split_docs = splitter.split_documents(documents)
     
-    # ส่วนหัวข้อ
-    gr.Markdown("""
-    # 🛡️ **SOC Analysis AI Assistant**
-    ### 🚀 Powered by Groq Deepseek-Chat
-    อัปโหลดไฟล์ log และถามคำถามเกี่ยวกับความปลอดภัย
+    if 'vectorstore' not in st.session_state or st.session_state.vectorstore is None:
+        st.session_state.vectorstore = FAISS.from_documents(
+            split_docs,
+            st.session_state.embedding_model
+        )
+    else:
+        st.session_state.vectorstore.add_documents(split_docs)
+
+def render_chat_interface():
+    """Render the chat interface with enhanced features"""
+    st.subheader("💬 SOC Analyst Chat")
+    
+    # Display chat history
+    for i, chat in enumerate(st.session_state.chat_history):
+        st_message(**chat, key=str(i))
+    
+    # Example questions OUTSIDE the form
+    st.markdown("💡 **Example Questions:**")
+    examples = [
+        "Identify potential security threats",
+        "Show suspicious IPs", 
+        "Analyze failed logins",
+        "Timeline of events",
+        "Most critical threat?"
+    ]
+    
+    # Create columns for example buttons
+    cols = st.columns(len(examples))
+    for col, example in zip(cols, examples):
+        if col.button(example, key=f"example_{example}", use_container_width=True):
+            st.session_state.selected_example = example
+            st.rerun()
+    
+    # Chat input form
+    with st.form(key='chat_form', clear_on_submit=True):
+        # Pre-fill with selected example if any
+        default_text = st.session_state.selected_example if st.session_state.selected_example else ""
+        user_input = st.text_area(
+            "Enter your security analysis question...",
+            key="user_input",
+            height=100,
+            placeholder="E.g., 'Are there any brute force attack patterns?'",
+            value=default_text
+        )
+        
+        col1, col2, col3 = st.columns([3, 1, 1])
+        with col1:
+            submit_button = st.form_submit_button("🚀 Analyze", type="primary")
+        with col2:
+            clear_button = st.form_submit_button("🗑️ Clear Chat")
+        with col3:
+            export_button = st.form_submit_button("📤 Export")
+    
+    # Handle form submissions
+    if submit_button and user_input:
+        # Clear the selected example after submission
+        st.session_state.selected_example = ""
+        handle_user_query(user_input)
+    elif clear_button:
+        st.session_state.chat_history = []
+        st.session_state.selected_example = ""
+        st.rerun()
+    elif export_button:
+        export_chat_history()
+
+def handle_user_query(query: str):
+    """Process user query with enhanced analysis"""
+    if not st.session_state.logs:
+        st.warning("Please upload log files first")
+        return
+        
+    # Add user message to history
+    st.session_state.chat_history.append({
+        "message": query,
+        "is_user": True,
+        "avatar_style": "adventurer-neutral"
+    })
+    
+    # Get AI response
+    with st.spinner("Analyzing logs..."):
+        response = analyze_logs_with_rag(query, st.session_state.logs)
+    
+    # Add AI response to history
+    st.session_state.chat_history.append({
+        "message": response,
+        "is_user": False,
+        "avatar_style": "bottts"
+    })
+    
+    st.rerun()
+
+def export_chat_history():
+    """Export chat history to a markdown file"""
+    if not st.session_state.chat_history:
+        st.warning("No chat history to export")
+        return
+        
+    markdown_content = "# SOC Analysis Chat History\n\n"
+    markdown_content += f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    
+    for chat in st.session_state.chat_history:
+        role = "User" if chat['is_user'] else "SOC Analyst"
+        markdown_content += f"## {role}\n\n{chat['message']}\n\n"
+    
+    st.download_button(
+        label="📥 Download Chat History",
+        data=markdown_content,
+        file_name=f"soc_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+        mime="text/markdown"
+    )
+
+# === Main Application ===
+def main():
+    # Configure page
+    st.set_page_config(
+        page_title="🛡️ Advanced SOC Analysis AI",
+        page_icon="🛡️",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    
+    # Custom CSS
+    st.markdown("""
+    <style>
+        .stButton button {
+            transition: all 0.3s ease;
+        }
+        .stButton button:hover {
+            transform: scale(1.05);
+        }
+        .stTextArea textarea {
+            min-height: 100px;
+        }
+        .css-1aumxhk {
+            background-color: #f0f2f6;
+            border-radius: 10px;
+            padding: 15px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Initialize session state
+    initialize_session_state()
+    
+    # Main layout
+    st.title("🛡️ Advanced SOC Analysis AI")
+    st.markdown("""
+    ### 🚀 AI-Powered Security Log Analysis
+    Upload security logs and get intelligent threat detection and analysis powered by Groq and LangChain.
     """)
     
-    # ส่วนอัปโหลดไฟล์
-    with gr.Row():
-        with gr.Column(scale=3):
-            file_upload = gr.File(
-                label="📁 ลากไฟล์มาวางหรือคลิกเพื่อเลือก",
-                file_types=['.json', '.csv', '.log', '.txt'],  # จำกัดประเภทไฟล์
-                elem_classes="file-upload"
-            )
-        
-    with gr.Column(scale=1):
-        upload_btn = gr.Button("📤 อัปโหลด", variant="primary", size="lg")
+    # File upload and visualization section
+    render_file_upload_section()
     
-    # แสดงสถานะการอัปโหลด
-    upload_status = gr.Textbox(
-        label="📊 สถานะ", 
-        interactive=False,  # ไม่ให้ผู้ใช้แก้ไข
-        value="🔄 รอการอัปโหลดไฟล์...",
-        show_label=False
-    )
-    
-    gr.Markdown("---")  # เส้นแบ่ง
-    
-    # ส่วนแชทแบบ ChatGPT
-    with gr.Column():
-        # พื้นที่แสดงการสนทนา
-        chatbot = gr.Chatbot(
-            label="💬 แชทกับ SOC Analyst AI",
-            height=500,
-            show_label=False,
-            placeholder="การสนทนาจะปรากฏที่นี่...",
-            elem_classes="chat-container"
-        )
-        
-        # แถวสำหรับพิมพ์ข้อความ
-        with gr.Row():
-            message_box = gr.Textbox(
-                placeholder="พิมพ์คำถามเกี่ยวกับ log ของคุณ... (เช่น 'มีการโจมตี brute force หรือไม่?')",
-                container=False,
-                scale=4,  # ขนาดสัดส่วน
-                show_label=False
-            )
-            send_button = gr.Button("📨", variant="primary", scale=1, min_width=50)
-    
-    # ตัวอย่างคำถามสำหรับผู้ใช้
-    with gr.Row():
-        gr.Examples(
-            examples=[
-                "มีการโจมตี brute force หรือไม่?",
-                "IP ไหนที่น่าสงสัยที่สุด?",
-                "มีความผิดปกติในการเข้าสู่ระบบหรือไม่?",
-                "วิเคราะห์ภัยคุกคามโดยรวม",
-                "แสดงสถิติการโจมตีตามเวลา"
-            ],
-            inputs=message_box,  # เมื่อคลิกจะใส่ใน message_box
-            label="💡 ตัวอย่างคำถาม"
-        )
-    
-    # === เชื่อมต่อ Event Handlers ===
-    
-    # เมื่อกดปุ่มอัปโหลด
-    upload_btn.click(
-        fn=upload_and_process_file,  # ฟังก์ชันที่จะเรียก
-        inputs=file_upload,          # Input component
-        outputs=[logs_state, upload_status]  # Output components
-    )
-    
-    # ฟังก์ชันสำหรับการส่งข้อความ
-    def submit_message(message, history, logs):
-        """Wrapper function สำหรับการส่งข้อความ"""
-        return process_message(message, history, logs)
-    
-    # เมื่อกดปุ่มส่ง
-    send_button.click(
-        fn=submit_message,
-        inputs=[message_box, chatbot, logs_state],
-        outputs=[chatbot, message_box]  # อัปเดต chatbot และล้าง message_box
-    )
-    
-    # เมื่อกด Enter ใน message box
-    message_box.submit(
-        fn=submit_message,
-        inputs=[message_box, chatbot, logs_state],
-        outputs=[chatbot, message_box]
-    )
+    # Chat interface section
+    st.markdown("---")
+    render_chat_interface()
 
-# === เรียกใช้งานแอพพลิเคชัน ===
 if __name__ == "__main__":
-    demo.launch(
-        share=False,           # ไม่แชร์ลิงก์สาธารณะ
-        server_name="0.0.0.0", # รับ connection จากทุก IP
-        server_port=7860,      # พอร์ตที่ใช้
-        show_error=True        # แสดง error ใน UI
-    )
+    main()

@@ -51,3 +51,10 @@ psutil>=5.9.0        # System monitoring
 
 # === for KEY ===
 python-dotenv
+
+# === streamlit ===
+streamlit
+streamlit-chat
+
+# === plotly ===
+plotly
