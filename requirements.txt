@@ -58,3 +58,9 @@ streamlit-chat
 
 # === plotly ===
 plotly
+
+# === celery ===
+celery 
+
+# === redis ===
+redis

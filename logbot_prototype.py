@@ -6,6 +6,11 @@ from streamlit_chat import message as st_message
 import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
+import redis
+from celery import Celery
+import hashlib
+import json
+import asyncio
 
 # Environment configuration
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -48,20 +53,171 @@ THREAT_LEVELS = {
     'none': {'color': '#008000', 'description': 'No threat detected'}
 }
 
-# === AI Model Initialization ===
-@st.cache_resource
-def load_embedding_model():
-    """Load and cache the embedding model"""
-    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-
+# === Model Loading Functions ===
 @st.cache_resource
 def load_llm_model():
-    """Load and cache the Ollama deepseek-coder model"""
-    return Ollama(
-        model="deepseek-coder",
-        temperature=0.1,
-        num_ctx=4096  # Context window size
+    """Load the Ollama LLM model with optimized configuration"""
+    try:
+        return Ollama(
+            model="deepseek-coder",
+            temperature=0.2,
+            top_k=40,
+            top_p=0.9,
+            repeat_penalty=1.1,
+            num_ctx=4096
+        )
+    except Exception as e:
+        st.error(f"Failed to load LLM model: {str(e)}")
+        return None
+
+@st.cache_resource
+def load_embedding_model():
+    """Load the HuggingFace embedding model"""
+    try:
+        return HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-mpnet-base-v2",
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+    except Exception as e:
+        st.error(f"Failed to load embedding model: {str(e)}")
+        return None
+
+# === Cache and Distributed Processing Setup ===
+@st.cache_resource
+def setup_redis():
+    """Initialize Redis connection for caching"""
+    try:
+        return redis.Redis(
+            host='localhost',
+            port=6379,
+            db=0,
+            decode_responses=True
+        )
+    except Exception as e:
+        st.warning(f"Redis connection failed: {str(e)}")
+        return None
+
+# Initialize Celery without caching
+def get_celery_app():
+    """Get Celery app instance"""
+    return Celery(
+        'soc_analysis',
+        broker='redis://localhost:6379/1',
+        backend='redis://localhost:6379/2'
     )
+
+# Create celery app instance
+celery_app = get_celery_app()
+
+def generate_cache_key(data: str) -> str:
+    """Generate consistent cache key for data"""
+    return hashlib.md5(data.encode('utf-8')).hexdigest()
+
+def cache_log_analysis(logs: List[str], analysis_result: str):
+    """Cache log analysis results"""
+    if 'redis' not in st.session_state or st.session_state.redis is None:
+        return
+    
+    cache_key = generate_cache_key('\n'.join(logs))
+    try:
+        st.session_state.redis.setex(
+            f"log_analysis:{cache_key}",
+            timedelta(hours=24),  # Cache for 24 hours
+            json.dumps({
+                'logs': logs,
+                'analysis': analysis_result,
+                'timestamp': datetime.now().isoformat()
+            })
+        )
+    except Exception as e:
+        st.warning(f"Cache write failed: {str(e)}")
+
+def get_cached_analysis(logs: List[str]) -> Optional[str]:
+    """Retrieve cached analysis if available"""
+    if 'redis' not in st.session_state or st.session_state.redis is None:
+        return None
+    
+    cache_key = generate_cache_key('\n'.join(logs))
+    try:
+        cached_data = st.session_state.redis.get(f"log_analysis:{cache_key}")
+        if cached_data:
+            return json.loads(cached_data)['analysis']
+    except Exception as e:
+        st.warning(f"Cache read failed: {str(e)}")
+    return None
+
+# === Distributed Task Definitions ===
+@celery_app.task
+def process_file_distributed(file_content: str, file_type: str) -> Tuple[List[str], Optional[str]]:
+    """Celery task for distributed file processing"""
+    try:
+        if file_type == 'json':
+            return process_json_file(file_content)
+        elif file_type == 'csv':
+            return process_csv_file(file_content)
+        elif file_type in ['log', 'txt']:
+            return process_text_file(file_content)
+        else:
+            return [], f"Unsupported file type: {file_type}"
+    except Exception as e:
+        return [], str(e)
+    
+# === Helper function to get celery app in session state ===
+def get_celery_from_session():
+    """Get celery app from session state or create new one"""
+    if 'celery_app' not in st.session_state:
+        st.session_state.celery_app = celery_app
+    return st.session_state.celery_app
+    
+# === Modified File Processing Functions ===
+async def parse_uploaded_file_async(file_obj) -> Tuple[List[str], Optional[str]]:
+    """
+    Process uploaded log files asynchronously with distributed processing option
+    
+    Args:
+        file_obj: Uploaded file object
+        
+    Returns:
+        Tuple of (processed_logs, error_message)
+    """
+    try:
+        # Handle different file object types
+        if hasattr(file_obj, 'name') and isinstance(file_obj.name, str):
+            filename_lower = file_obj.name.lower()
+            content = file_obj.read().decode("utf-8")
+        elif hasattr(file_obj, 'read'):
+            content = file_obj.read().decode("utf-8")
+            filename_lower = file_obj.name.lower() if hasattr(file_obj, "name") else ""
+        else:
+            return [], "Unsupported file object type"
+            
+        # Check for cached results first
+        cache_key = generate_cache_key(content)
+        if 'redis' in st.session_state and st.session_state.redis:
+            cached_result = get_cached_analysis([content])
+            if cached_result:
+                return cached_result.split('\n'), "From cache"
+        
+        # Process based on file type (distributed or local)
+        if st.session_state.get('use_distributed_processing', False):
+            file_type = filename_lower.split('.')[-1] if '.' in filename_lower else 'txt'
+            result = process_file_distributed.delay(content, file_type)
+            while not result.ready():
+                await asyncio.sleep(0.1)
+            return result.get()
+        else:
+            if filename_lower.endswith('.json'):
+                return process_json_file(content)
+            elif filename_lower.endswith('.csv'):
+                return process_csv_file(content)
+            elif filename_lower.endswith(('.log', '.txt')):
+                return process_text_file(content)
+            else:
+                return [], f"Unsupported file type. Supported types: {', '.join(SUPPORTED_FILE_TYPES)}"
+            
+    except Exception as e:
+        return [], f"Error processing file: {str(e)}"
 
 # === File Processing Functions ===
 def parse_uploaded_file(file_obj) -> Tuple[List[str], Optional[str]]:
@@ -222,7 +378,13 @@ def preprocess_logs(log_lines: List[str]) -> List[str]:
 # === Log Analysis Functions ===
 def analyze_logs_with_rag(message: str, logs: List[str]) -> str:
     """Enhanced RAG-based log analysis with better error handling"""
-    if 'vectorstore' not in st.session_state:
+    # Check cache first
+    cached_result = get_cached_analysis(logs)
+    if cached_result:
+        return cached_result + "\n\n🔍 (This analysis was retrieved from cache)"
+    
+    # Original analysis logic
+    if 'vectorstore' not in st.session_state or st.session_state.vectorstore is None:
         return "⚠️ Please upload log files first"
     
     vectorstore = st.session_state.vectorstore
@@ -254,7 +416,7 @@ def analyze_logs_with_rag(message: str, logs: List[str]) -> str:
     split_docs = splitter.split_documents(documents) or documents
     
     # Create vectorstore if not exists or update if exists
-    if 'vectorstore' not in st.session_state:
+    if 'vectorstore' not in st.session_state or st.session_state.vectorstore is None:
         st.session_state.vectorstore = FAISS.from_documents(split_docs, st.session_state.embedding_model)
     else:
         st.session_state.vectorstore.add_documents(split_docs)
@@ -355,6 +517,7 @@ def analyze_logs_with_rag(message: str, logs: List[str]) -> str:
                 line_num = doc.metadata.get('line_number', 'N/A')
                 response += f"{i}. Line {line_num}: {doc.page_content[:200]}...\n"
         
+        cache_log_analysis(logs, response)
         return response
         
     except Exception as e:
@@ -489,6 +652,10 @@ def initialize_session_state():
         st.session_state.analysis_mode = "basic"
     if 'selected_example' not in st.session_state:
         st.session_state.selected_example = ""
+    if 'redis' not in st.session_state:
+        st.session_state.redis = setup_redis()
+    if 'use_distributed_processing' not in st.session_state:
+        st.session_state.use_distributed_processing = False
 
 def render_file_upload_section():
     """Render the file upload section with enhanced UI"""
@@ -510,6 +677,12 @@ def render_file_upload_section():
                 ["Basic", "Advanced", "Forensic"],
                 key="mode_select"
             )
+        
+        # Distributed processing toggle
+        st.session_state.use_distributed_processing = st.checkbox(
+            "Enable distributed processing (Celery)",
+            value=st.session_state.use_distributed_processing
+        )
 
 def process_uploaded_files(uploaded_files):
     """Process uploaded files with progress feedback"""
@@ -523,7 +696,10 @@ def process_uploaded_files(uploaded_files):
         
         for i, uploaded_file in enumerate(uploaded_files):
             progress_bar.progress((i + 1) / len(uploaded_files))
-            logs, error = parse_uploaded_file(uploaded_file)
+            if st.session_state.use_distributed_processing:
+                logs, error = asyncio.run(parse_uploaded_file_async(uploaded_file))
+            else:
+                logs, error = parse_uploaded_file(uploaded_file)
             if error:
                 st.error(f"Error in {uploaded_file.name}: {error}")
             else:
@@ -708,6 +884,12 @@ def main():
             border-radius: 10px;
             padding: 15px;
         }
+        .stAlert {
+            border-radius: 10px;
+        }
+        .stProgress > div > div > div > div {
+            background-color: #4CAF50;
+        }
     </style>
     """, unsafe_allow_html=True)
     
@@ -731,6 +913,17 @@ def main():
         2. Run `ollama pull deepseek-coder` to download the model
         3. Ensure the Ollama server is running (`ollama serve`)
         """)
+        
+        if st.button("Check Ollama Connection"):
+            try:
+                if st.session_state.llm:
+                    test_response = st.session_state.llm("Test connection")
+                    st.success("✅ Ollama connection successful!")
+                    st.code(test_response[:200] + "...", language="text")
+                else:
+                    st.error("❌ Ollama connection failed - LLM not initialized")
+            except Exception as e:
+                st.error(f"❌ Ollama connection failed: {str(e)}")
     
     # File upload and visualization section
     render_file_upload_section()
