@@ -60,7 +60,7 @@
 ### 1. Clone โปรเจกต์
 
 ```bash
-git clone https://github.com/thanattouth/vibe_log_chatbot_prototype.git
+git clone https://github.com/thanattouth/vibeLogChatbotPrototype.git
 cd vibe_log_chatbot_prototype
 ```
 
