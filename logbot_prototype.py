@@ -36,6 +36,16 @@ from langchain.prompts import PromptTemplate
 from langchain.callbacks import StreamlitCallbackHandler
 from langchain_community.llms import Ollama
 
+# === Enhanced Audit Logging ===
+import logging
+from logging.handlers import RotatingFileHandler
+
+
+# Add to constants section
+AUDIT_LOG_FILE = "soc_audit.log"
+MAX_LOG_SIZE = 10 * 1024 * 1024  # 10 MB
+LOG_BACKUP_COUNT = 5
+
 # === Constants ===
 SUPPORTED_FILE_TYPES = ['.json', '.csv', '.log', '.txt']
 SECURITY_KEYWORDS = [
@@ -52,6 +62,154 @@ THREAT_LEVELS = {
     'low': {'color': '#FFFF00', 'description': 'Monitor for patterns'},
     'none': {'color': '#008000', 'description': 'No threat detected'}
 }
+
+def setup_audit_logging():
+    """Configure comprehensive audit logging"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            RotatingFileHandler(
+                AUDIT_LOG_FILE,
+                maxBytes=MAX_LOG_SIZE,
+                backupCount=LOG_BACKUP_COUNT
+            ),
+            logging.StreamHandler()
+        ]
+    )
+    return logging.getLogger('soc_audit')
+
+# Add to session state initialization
+if 'audit_logger' not in st.session_state:
+    st.session_state.audit_logger = setup_audit_logging()
+
+# Decorator for audit logging
+def audit_log(action: str):
+    """Decorator to log function execution with parameters and results"""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            logger = st.session_state.audit_logger
+            
+            try:
+                # Log function entry
+                logger.info(
+                    f"ACTION_START: {action} | "
+                    f"Function: {func.__name__} | "
+                    f"Args: {args} | "
+                    f"Kwargs: {kwargs}"
+                )
+                
+                # Execute function
+                result = func(*args, **kwargs)
+                
+                # Log successful completion
+                logger.info(
+                    f"ACTION_SUCCESS: {action} | "
+                    f"Function: {func.__name__} | "
+                    f"Result: {str(result)[:200]}..."
+                )
+                
+                return result
+                
+            except Exception as e:
+                # Log errors
+                logger.error(
+                    f"ACTION_FAILURE: {action} | "
+                    f"Function: {func.__name__} | "
+                    f"Error: {str(e)} | "
+                    f"Args: {args} | "
+                    f"Kwargs: {kwargs}",
+                    exc_info=True
+                )
+                raise
+                
+        return wrapper
+    return decorator
+
+# === Audit Logging for Key Functions ===
+
+@audit_log("FILE_UPLOAD")
+def parse_uploaded_file(file_obj) -> Tuple[List[str], Optional[str]]:
+    """Process uploaded log files with audit logging"""
+    # Existing implementation remains the same
+    pass
+
+@audit_log("LOG_ANALYSIS")
+def analyze_logs_with_rag(message: str, logs: List[str]) -> str:
+    """Enhanced RAG-based log analysis with audit logging"""
+    # Existing implementation remains the same
+    pass
+
+@audit_log("VECTORSTORE_UPDATE")
+def create_vectorstore(logs: List[str]):
+    """Create or update vectorstore with audit logging"""
+    # Existing implementation remains the same
+    pass
+
+@audit_log("USER_QUERY")
+def handle_user_query(query: str):
+    """Process user query with audit logging"""
+    # Existing implementation remains the same
+    pass
+
+# === Audit Log Viewing Interface ===
+def render_audit_log_viewer():
+    """Add audit log viewing section to UI"""
+    with st.expander("🔍 View Audit Logs", expanded=False):
+        st.subheader("System Audit Logs")
+        
+        # Log level filter
+        log_level = st.selectbox(
+            "Log Level Filter",
+            ["INFO", "WARNING", "ERROR", "ALL"],
+            index=0
+        )
+        
+        # Date range filter
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("Start Date")
+        with col2:
+            end_date = st.date_input("End Date", datetime.now())
+        
+        # Action filter
+        action_filter = st.text_input("Filter by Action (e.g., FILE_UPLOAD)")
+        
+        if st.button("Load Audit Logs"):
+            try:
+                with open(AUDIT_LOG_FILE, "r") as f:
+                    logs = f.readlines()
+                
+                filtered_logs = []
+                for log in logs:
+                    # Parse log line (simplified example)
+                    log_time_str = log.split(" - ")[0]
+                    log_time = datetime.strptime(log_time_str, "%Y-%m-%d %H:%M:%S,%f")
+                    
+                    # Apply filters
+                    if (log_time.date() >= start_date and 
+                        log_time.date() <= end_date and
+                        (log_level == "ALL" or f" - {log_level} - " in log) and
+                        (not action_filter or f"ACTION: {action_filter}" in log)):
+                        filtered_logs.append(log)
+                
+                # Display logs
+                st.text_area(
+                    "Audit Logs",
+                    value="".join(filtered_logs[-1000:]),  # Limit to last 1000 lines
+                    height=400
+                )
+                
+                # Download button
+                st.download_button(
+                    label="Download Filtered Logs",
+                    data="".join(filtered_logs),
+                    file_name=f"audit_logs_{datetime.now().strftime('%Y%m%d')}.log",
+                    mime="text/plain"
+                )
+                
+            except Exception as e:
+                st.error(f"Failed to read audit logs: {str(e)}")
 
 # === Model Loading Functions ===
 @st.cache_resource
@@ -656,20 +814,26 @@ def initialize_session_state():
         st.session_state.redis = setup_redis()
     if 'use_distributed_processing' not in st.session_state:
         st.session_state.use_distributed_processing = False
+    if 'show_file_upload' not in st.session_state:
+        st.session_state.show_file_upload = True
+    if 'show_settings' not in st.session_state:
+        st.session_state.show_settings = False
 
 def render_file_upload_section():
     """Render the file upload section with enhanced UI"""
-    with st.expander("📁 Upload Log Files", expanded=True):
+    if st.session_state.show_file_upload:
+        st.subheader("📁 Upload Log Files")
         uploaded_file = st.file_uploader(
             "Drag and drop or click to select log files",
             type=SUPPORTED_FILE_TYPES,
             accept_multiple_files=True,
-            key="file_uploader"
+            key="file_uploader",
+            help="Supported formats: JSON, CSV, LOG, TXT"
         )
         
         col1, col2 = st.columns([1, 1])
         with col1:
-            if st.button("📤 Process Files", type="primary"):
+            if st.button("Process Files", type="primary", use_container_width=True):
                 process_uploaded_files(uploaded_file)
         with col2:
             st.session_state.analysis_mode = st.selectbox(
@@ -755,49 +919,127 @@ def create_vectorstore(logs: List[str]):
         st.session_state.vectorstore.add_documents(split_docs)
 
 def render_chat_interface():
-    """Render the chat interface with enhanced features"""
-    st.subheader("💬 SOC Analyst Chat")
+    """Render the chat interface with ChatGPT/DeepSeek style"""
+    # Add JavaScript for example question clicks
+    st.markdown("""
+    <script>
+    function setQuestion(text) {
+        const textarea = parent.document.querySelector('textarea[aria-label="Message SOC Analysis AI..."]');
+        if (textarea) {
+            textarea.value = text;
+            // Dispatch an input event to trigger Streamlit's detection
+            const event = new Event('input', { bubbles: true });
+            textarea.dispatchEvent(event);
+        }
+    }
+    </script>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <style>
+        /* Previous styles remain the same */
+        
+        /* Change bot message text color to black */
+        .bot-message {
+            background-color: #f8f9fa;
+            border-radius: 18px 18px 18px 0;
+            padding: 12px 16px;
+            margin: 8px 0;
+            max-width: 80%;
+            margin-right: auto;
+            color: black !important;  /* Added this line */
+        }
+        
+        /* Style for example questions */
+        .example-question {
+            display: inline-block;
+            background-color: #f0f7ff;
+            border-radius: 12px;
+            padding: 8px 12px;
+            margin: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: #1a73e8;
+        }
+        .example-question:hover {
+            background-color: #d8e9ff;
+            color: #0d5bba;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Main chat container
+    st.markdown('<div class="chat-container">', unsafe_allow_html=True)
     
-    # Display chat history
+    # Display chat history with custom styling
     for i, chat in enumerate(st.session_state.chat_history):
-        st_message(**chat, key=str(i))
+        if chat['is_user']:
+            st.markdown(f"""
+            <div style="display: flex; justify-content: flex-end;">
+                <div class="user-message">
+                    {chat['message']}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div style="display: flex; justify-content: flex-start;">
+                <div class="bot-message">
+                    {chat['message']}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
     
-    # Example questions OUTSIDE the form
-    st.markdown("💡 **Example Questions:**")
-    examples = [
-        "Identify potential security threats",
-        "Show suspicious IPs", 
-        "Analyze failed logins",
-        "Timeline of events",
-        "Most critical threat?"
-    ]
+    # Example questions
+    if not st.session_state.chat_history:
+        st.markdown("""
+        <div style="text-align: center; margin-top: 40px; color: #666;">
+            <h3>How can I help with your security logs today?</h3>
+            <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 20px 0;">
+        """, unsafe_allow_html=True)
+        
+        examples = [
+            "Identify potential security threats",
+            "Show suspicious IPs", 
+            "Analyze failed logins",
+            "Timeline of events",
+            "Most critical threat?"
+        ]
+        
+        for example in examples:
+            st.markdown(f"""
+            <div class="example-question" onclick="setQuestion('{example}')">
+                {example}
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("</div></div>", unsafe_allow_html=True)
     
-    # Create columns for example buttons
-    cols = st.columns(len(examples))
-    for col, example in zip(cols, examples):
-        if col.button(example, key=f"example_{example}", use_container_width=True):
-            st.session_state.selected_example = example
-            st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
     
-    # Chat input form
+    # Chat input form (fixed at bottom)
+    st.markdown('<div class="chat-input">', unsafe_allow_html=True)
     with st.form(key='chat_form', clear_on_submit=True):
         # Pre-fill with selected example if any
         default_text = st.session_state.selected_example if st.session_state.selected_example else ""
         user_input = st.text_area(
-            "Enter your security analysis question...",
+            "Message SOC Analysis AI...",
             key="user_input",
             height=100,
             placeholder="E.g., 'Are there any brute force attack patterns?'",
-            value=default_text
+            value=default_text,
+            label_visibility="collapsed"
         )
         
         col1, col2, col3 = st.columns([3, 1, 1])
         with col1:
-            submit_button = st.form_submit_button("🚀 Analyze", type="primary")
+            submit_button = st.form_submit_button("Send", type="primary", use_container_width=True)
         with col2:
-            clear_button = st.form_submit_button("🗑️ Clear Chat")
+            clear_button = st.form_submit_button("Clear", use_container_width=True)
         with col3:
-            export_button = st.form_submit_button("📤 Export")
+            export_button = st.form_submit_button("Export", use_container_width=True)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
     
     # Handle form submissions
     if submit_button and user_input:
@@ -861,75 +1103,106 @@ def export_chat_history():
 def main():
     # Configure page
     st.set_page_config(
-        page_title="🛡️ Advanced SOC Analysis AI",
+        page_title="SOC Analysis AI",
         page_icon="🛡️",
-        layout="wide",
-        initial_sidebar_state="expanded"
+        layout="centered",
+        initial_sidebar_state="collapsed"
     )
     
-    # Custom CSS
+    # Custom CSS for overall styling
     st.markdown("""
     <style>
-        .stButton button {
-            transition: all 0.3s ease;
+        /* Main content area */
+        .main .block-container {
+            padding-top: 2rem;
+            padding-bottom: 8rem;
+            max-width: 1200px;
         }
-        .stButton button:hover {
-            transform: scale(1.05);
+        
+        /* Headers */
+        h1, h2, h3 {
+            color: #1a73e8;
         }
-        .stTextArea textarea {
-            min-height: 100px;
+        
+        /* Buttons */
+        .stButton>button {
+            border-radius: 8px;
+            font-weight: 500;
+            padding: 0.5rem 1rem;
         }
-        .css-1aumxhk {
-            background-color: #f0f2f6;
-            border-radius: 10px;
-            padding: 15px;
+        
+        .stButton>button:first-child:focus:not(:active) {
+            border-color: #1a73e8;
+            box-shadow: 0 0 0 2px #e8f0fe;
         }
-        .stAlert {
-            border-radius: 10px;
+        
+        /* Input fields */
+        .stTextArea>div>div>textarea {
+            border-radius: 12px;
+            padding: 12px;
         }
-        .stProgress > div > div > div > div {
-            background-color: #4CAF50;
+        
+        /* Sidebar */
+        [data-testid="stSidebar"] {
+            background-color: #f8f9fa;
+            padding: 1rem;
+        }
+        
+        /* Progress bars */
+        .stProgress>div>div>div>div {
+            background-color: #1a73e8;
         }
     </style>
     """, unsafe_allow_html=True)
-    
+
     # Initialize session state
     initialize_session_state()
+
+    # Main content area
+    st.title("SOC Analysis AI")
+    st.caption("AI-powered security log analysis with threat detection")
     
-    # Main layout
-    st.title("🛡️ Advanced SOC Analysis AI")
-    st.markdown("""
-    ### 🚀 AI-Powered Security Log Analysis
-    Upload security logs and get intelligent threat detection and analysis powered by Ollama and LangChain.
-    """)
+    # Toggle buttons for sections
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📁 Upload Logs", use_container_width=True):
+            st.session_state.show_file_upload = not st.session_state.show_file_upload
+    with col2:
+        if st.button("⚙️ Settings", use_container_width=True):
+            st.session_state.show_settings = not st.session_state.show_settings
     
-    # Add Ollama server status check
-    with st.expander("🔧 Ollama Server Configuration", expanded=False):
-        st.info("""
-        **Note:** This application requires a local Ollama server running with the deepseek-coder.
+    # File upload section
+    if st.session_state.show_file_upload:
+        render_file_upload_section()
+    
+    # Settings section
+    if st.session_state.show_settings:
+        st.subheader("Settings")
         
-        To set up:
-        1. Install Ollama from [ollama.ai](https://ollama.ai)
-        2. Run `ollama pull deepseek-coder` to download the model
-        3. Ensure the Ollama server is running (`ollama serve`)
-        """)
+        # Ollama server status
+        st.markdown("#### 🛠️ Ollama Settings")
+        st.info("Ensure Ollama server is running with deepseek-coder model.")
         
-        if st.button("Check Ollama Connection"):
+        if st.button("Test Connection", use_container_width=True):
             try:
                 if st.session_state.llm:
                     test_response = st.session_state.llm("Test connection")
-                    st.success("✅ Ollama connection successful!")
-                    st.code(test_response[:200] + "...", language="text")
+                    st.success("Connection successful!")
                 else:
-                    st.error("❌ Ollama connection failed - LLM not initialized")
+                    st.error("LLM not initialized")
             except Exception as e:
-                st.error(f"❌ Ollama connection failed: {str(e)}")
-    
-    # File upload and visualization section
-    render_file_upload_section()
+                st.error(f"Connection failed: {str(e)}")
+        
+        # Audit logs
+        st.markdown("#### 📜 Audit Logs")
+        render_audit_log_viewer()
     
     # Chat interface section
-    st.markdown("---")
+    if st.session_state.logs:
+        st.markdown("---")
+        st.subheader("Analysis Chat")
+        st.caption(f"Analyzing {len(st.session_state.logs)} log entries")
+    
     render_chat_interface()
 
 if __name__ == "__main__":

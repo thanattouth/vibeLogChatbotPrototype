@@ -2,3 +2,4 @@
 .env
 backup
 *.rdb
+soc_audit.log
