@@ -268,22 +268,24 @@ def get_celery_app():
 # Create celery app instance
 celery_app = get_celery_app()
 
-def generate_cache_key(data: str) -> str:
-    """Generate consistent cache key for data"""
-    return hashlib.md5(data.encode('utf-8')).hexdigest()
+def generate_cache_key(data: str, query: str = "") -> str:
+    """Generate consistent cache key for data and query"""
+    combined = f"{data}|{query}"
+    return hashlib.md5(combined.encode('utf-8')).hexdigest()
 
-def cache_log_analysis(logs: List[str], analysis_result: str):
-    """Cache log analysis results"""
+def cache_log_analysis(logs: List[str], query: str, analysis_result: str):
+    """Cache log analysis results with query"""
     if 'redis' not in st.session_state or st.session_state.redis is None:
         return
     
-    cache_key = generate_cache_key('\n'.join(logs))
+    cache_key = generate_cache_key('\n'.join(logs), query)
     try:
         st.session_state.redis.setex(
             f"log_analysis:{cache_key}",
             timedelta(hours=24),  # Cache for 24 hours
             json.dumps({
                 'logs': logs,
+                'query': query,
                 'analysis': analysis_result,
                 'timestamp': datetime.now().isoformat()
             })
@@ -291,12 +293,12 @@ def cache_log_analysis(logs: List[str], analysis_result: str):
     except Exception as e:
         st.warning(f"Cache write failed: {str(e)}")
 
-def get_cached_analysis(logs: List[str]) -> Optional[str]:
+def get_cached_analysis(logs: List[str], query: str) -> Optional[str]:
     """Retrieve cached analysis if available"""
     if 'redis' not in st.session_state or st.session_state.redis is None:
         return None
     
-    cache_key = generate_cache_key('\n'.join(logs))
+    cache_key = generate_cache_key('\n'.join(logs), query)
     try:
         cached_data = st.session_state.redis.get(f"log_analysis:{cache_key}")
         if cached_data:
@@ -536,8 +538,8 @@ def preprocess_logs(log_lines: List[str]) -> List[str]:
 # === Log Analysis Functions ===
 def analyze_logs_with_rag(message: str, logs: List[str]) -> str:
     """Enhanced RAG-based log analysis with better error handling"""
-    # Check cache first
-    cached_result = get_cached_analysis(logs)
+    # Check cache first with query
+    cached_result = get_cached_analysis(logs, message)
     if cached_result:
         return cached_result + "\n\n🔍 (This analysis was retrieved from cache)"
     
@@ -675,7 +677,7 @@ def analyze_logs_with_rag(message: str, logs: List[str]) -> str:
                 line_num = doc.metadata.get('line_number', 'N/A')
                 response += f"{i}. Line {line_num}: {doc.page_content[:200]}...\n"
         
-        cache_log_analysis(logs, response)
+        cache_log_analysis(logs, message, response)
         return response
         
     except Exception as e:
@@ -806,8 +808,7 @@ def initialize_session_state():
         st.session_state.llm = load_llm_model()
     if 'embedding_model' not in st.session_state:
         st.session_state.embedding_model = load_embedding_model()
-    if 'analysis_mode' not in st.session_state:
-        st.session_state.analysis_mode = "basic"
+    # ลบบรรทัด analysis_mode ออก
     if 'selected_example' not in st.session_state:
         st.session_state.selected_example = ""
     if 'redis' not in st.session_state:
@@ -818,6 +819,9 @@ def initialize_session_state():
         st.session_state.show_file_upload = True
     if 'show_settings' not in st.session_state:
         st.session_state.show_settings = False
+    if 'last_query' not in st.session_state:
+        st.session_state.last_query = ""
+
 
 def render_file_upload_section():
     """Render the file upload section with enhanced UI"""
@@ -836,11 +840,8 @@ def render_file_upload_section():
             if st.button("Process Files", type="primary", use_container_width=True):
                 process_uploaded_files(uploaded_file)
         with col2:
-            st.session_state.analysis_mode = st.selectbox(
-                "Analysis Mode",
-                ["Basic", "Advanced", "Forensic"],
-                key="mode_select"
-            )
+            # ลบส่วน selectbox ของ Analysis Mode ออก
+            pass
         
         # Distributed processing toggle
         st.session_state.use_distributed_processing = st.checkbox(
@@ -971,7 +972,7 @@ def render_chat_interface():
     # Main chat container
     st.markdown('<div class="chat-container">', unsafe_allow_html=True)
     
-    # Display chat history with custom styling
+    # Display chat history
     for i, chat in enumerate(st.session_state.chat_history):
         if chat['is_user']:
             st.markdown(f"""
@@ -1017,17 +1018,11 @@ def render_chat_interface():
     
     st.markdown('</div>', unsafe_allow_html=True)
     
-    # Chat input form (fixed at bottom)
-    st.markdown('<div class="chat-input">', unsafe_allow_html=True)
-    with st.form(key='chat_form', clear_on_submit=True):
-        # Pre-fill with selected example if any
-        default_text = st.session_state.selected_example if st.session_state.selected_example else ""
-        user_input = st.text_area(
+    # Input form with proper state management
+    with st.form(key="chat_form", clear_on_submit=True):
+        user_input = st.text_input(
             "Message SOC Analysis AI...",
-            key="user_input",
-            height=100,
             placeholder="E.g., 'Are there any brute force attack patterns?'",
-            value=default_text,
             label_visibility="collapsed"
         )
         
@@ -1039,26 +1034,48 @@ def render_chat_interface():
         with col3:
             export_button = st.form_submit_button("Export", use_container_width=True)
     
-    st.markdown('</div>', unsafe_allow_html=True)
-    
     # Handle form submissions
-    if submit_button and user_input:
-        # Clear the selected example after submission
-        st.session_state.selected_example = ""
-        handle_user_query(user_input)
-    elif clear_button:
+    if clear_button:
         st.session_state.chat_history = []
-        st.session_state.selected_example = ""
         st.rerun()
+    
     elif export_button:
         export_chat_history()
+    
+    elif submit_button and user_input:
+        handle_user_query(user_input)
+        st.rerun()
+    
+    # JavaScript สำหรับการกด Enter (optional - form already handles this)
+    st.markdown("""
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const input = parent.document.querySelector('input[aria-label="Message SOC Analysis AI..."]');
+        if (input) {
+            input.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    // Form submission is handled by Streamlit automatically
+                }
+            });
+        }
+    });
+    </script>
+    """, unsafe_allow_html=True)
 
 def handle_user_query(query: str):
     """Process user query with enhanced analysis"""
     if not st.session_state.logs:
         st.warning("Please upload log files first")
         return
+    
+    # ตรวจสอบว่าไม่ใช่คำถามเดิม
+    if st.session_state.last_query == query:
+        return
         
+    # บันทึกคำถามปัจจุบัน
+    st.session_state.last_query = query
+    
     # Add user message to history
     st.session_state.chat_history.append({
         "message": query,
@@ -1076,8 +1093,6 @@ def handle_user_query(query: str):
         "is_user": False,
         "avatar_style": "bottts"
     })
-    
-    st.rerun()
 
 def export_chat_history():
     """Export chat history to a markdown file"""
@@ -1111,49 +1126,38 @@ def main():
     
     # Custom CSS for overall styling
     st.markdown("""
-    <style>
-        /* Main content area */
-        .main .block-container {
-            padding-top: 2rem;
-            padding-bottom: 8rem;
-            max-width: 1200px;
-        }
-        
-        /* Headers */
-        h1, h2, h3 {
-            color: #1a73e8;
-        }
-        
-        /* Buttons */
-        .stButton>button {
-            border-radius: 8px;
-            font-weight: 500;
-            padding: 0.5rem 1rem;
-        }
-        
-        .stButton>button:first-child:focus:not(:active) {
-            border-color: #1a73e8;
-            box-shadow: 0 0 0 2px #e8f0fe;
-        }
-        
-        /* Input fields */
-        .stTextArea>div>div>textarea {
-            border-radius: 12px;
-            padding: 12px;
-        }
-        
-        /* Sidebar */
-        [data-testid="stSidebar"] {
-            background-color: #f8f9fa;
-            padding: 1rem;
-        }
-        
-        /* Progress bars */
-        .stProgress>div>div>div>div {
-            background-color: #1a73e8;
-        }
-    </style>
-    """, unsafe_allow_html=True)
+<style>
+    /* ... (ส่วนอื่นๆ เหมือนเดิม) ... */
+    
+    /* Text input fields */
+    .stTextInput>div>div>input {
+        border-radius: 12px;
+        padding: 12px;
+        height: 48px;
+        font-size: 16px;
+    }
+    
+    /* Chat container adjustments */
+    .chat-input {
+        position: fixed;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 80%;
+        max-width: 800px;
+        background: white;
+        padding: 10px;
+        border-radius: 12px;
+        box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+        z-index: 100;
+    }
+    
+    /* Form container */
+    .stForm {
+        margin-bottom: 0;
+    }
+</style>
+""", unsafe_allow_html=True)
 
     # Initialize session state
     initialize_session_state()
