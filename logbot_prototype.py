@@ -535,153 +535,359 @@ def preprocess_logs(log_lines: List[str]) -> List[str]:
     
     return processed
 
+def handle_general_security_question(question: str) -> str:
+    """Handle general cybersecurity questions without requiring specific log data"""
+    
+    # Common security topics and responses
+    security_topics = {
+        "brute force": """
+        **🔐 Brute Force Attacks - Expert Analysis:**
+        
+        **What to Look For:**
+        - Multiple failed login attempts from same IP
+        - Rapid succession of authentication failures
+        - Dictionary-based username attempts
+        - Time-based patterns (automated vs. manual)
+        
+        **MITRE ATT&CK Reference:**
+        - Technique: T1110 (Brute Force)
+        - Sub-techniques: T1110.001 (Password Guessing), T1110.003 (Password Spraying)
+        
+        **Detection Indicators:**
+        - Event ID 4625 (Windows) - Failed logins
+        - HTTP 401/403 responses in web logs
+        - SSH authentication failures
+        - Account lockout events
+        
+        **Response Actions:**
+        1. **Immediate**: Block attacking IPs
+        2. **Short-term**: Enable account lockout policies
+        3. **Long-term**: Implement MFA, monitor for patterns
+        """,
+        
+        "phishing": """
+        **🎣 Phishing Attacks - Expert Analysis:**
+        
+        **What to Look For:**
+        - Suspicious email attachments or links
+        - Unusual outbound DNS queries
+        - Unexpected file downloads
+        - User credential input to unfamiliar domains
+        
+        **MITRE ATT&CK Reference:**
+        - Technique: T1566 (Phishing)
+        - Sub-techniques: T1566.001 (Spearphishing Attachment)
+        
+        **Detection Indicators:**
+        - Email security gateway alerts
+        - DNS queries to suspicious domains
+        - Unexpected process executions
+        - Credential harvesting attempts
+        
+        **Response Actions:**
+        1. **Immediate**: Isolate affected systems
+        2. **Investigation**: Check email logs, DNS logs
+        3. **Mitigation**: Update email filters, user training
+        """,
+        
+        "malware": """
+        **🦠 Malware Detection - Expert Analysis:**
+        
+        **What to Look For:**
+        - Unusual process executions
+        - Unexpected network connections
+        - File system modifications
+        - Registry changes (Windows)
+        
+        **MITRE ATT&CK Reference:**
+        - Multiple techniques depending on malware type
+        - T1055 (Process Injection)
+        - T1071 (Application Layer Protocol)
+        
+        **Detection Indicators:**
+        - Antivirus alerts
+        - Behavioral anomalies
+        - Hash matches in threat intelligence
+        - Suspicious network traffic
+        
+        **Response Actions:**
+        1. **Immediate**: Quarantine infected systems
+        2. **Analysis**: Reverse engineer sample
+        3. **Remediation**: Clean systems, update signatures
+        """
+    }
+    
+    # Find relevant topic
+    question_lower = question.lower()
+    for topic, response in security_topics.items():
+        if topic in question_lower:
+            return response
+    
+    # General cybersecurity guidance
+    if any(word in question_lower for word in ["security", "threat", "attack", "incident"]):
+        return """
+        **🛡️ General Cybersecurity Guidance:**
+        
+        **Key Security Principles:**
+        1. **Defense in Depth**: Multiple layers of security controls
+        2. **Zero Trust**: Verify everything, trust nothing
+        3. **Incident Response**: Prepare, detect, respond, recover
+        4. **Threat Intelligence**: Stay informed about current threats
+        
+        **Essential Log Sources:**
+        - System logs (Windows Event Logs, Syslog)
+        - Network logs (Firewall, IDS/IPS)
+        - Application logs (Web servers, databases)
+        - Security tools (Antivirus, EDR)
+        
+        **MITRE ATT&CK Framework:**
+        - Tactics: The "why" of an attack
+        - Techniques: The "how" of an attack
+        - Procedures: The specific implementation
+        
+        **Best Practices:**
+        1. Implement comprehensive logging
+        2. Use SIEM for correlation
+        3. Regular threat hunting
+        4. Continuous monitoring
+        5. Regular security assessments
+        """
+    
+    # Fallback response
+    return f"""
+    **🤔 Security Question Analysis:**
+    
+    I understand you're asking about: "{question}"
+    
+    **General Approach:**
+    1. **Define the Problem**: What specific security concern are you addressing?
+    2. **Gather Context**: What systems, logs, or events are involved?
+    3. **Apply Framework**: Use MITRE ATT&CK, NIST, or similar frameworks
+    4. **Analyze Evidence**: Look for indicators in your logs
+    5. **Recommend Actions**: Provide specific, actionable steps
+    
+    **For Better Assistance:**
+    - Provide specific log samples if available
+    - Describe your environment and concerns
+    - Ask about specific attack types or techniques
+    - Include relevant timeframes or systems
+    
+    **Common Analysis Areas:**
+    - Authentication failures and brute force
+    - Network anomalies and data exfiltration
+    - Malware detection and analysis
+    - Privilege escalation and lateral movement
+    - Incident response and forensics
+    """
+
 # === Log Analysis Functions ===
 def analyze_logs_with_rag(message: str, logs: List[str]) -> str:
-    """Enhanced RAG-based log analysis with better error handling"""
-    # Check cache first with query
+    """Enhanced RAG-based log analysis with hybrid response system"""
+    
+    # Check if this is a general security question (no specific log data needed)
+    general_questions = [
+        "what is", "how to", "explain", "define", "best practice", 
+        "recommendation", "guide", "tutorial", "help", "difference between"
+    ]
+    
+    is_general_question = any(keyword in message.lower() for keyword in general_questions)
+    
+    # If no logs uploaded but it's a general question, provide general guidance
+    if 'vectorstore' not in st.session_state or st.session_state.vectorstore is None:
+        if is_general_question:
+            return handle_general_security_question(message)
+        else:
+            return "⚠️ Please upload log files first to analyze specific security events."
+    
+    # Check cache first
     cached_result = get_cached_analysis(logs, message)
     if cached_result:
         return cached_result + "\n\n🔍 (This analysis was retrieved from cache)"
     
-    # Original analysis logic
-    if 'vectorstore' not in st.session_state or st.session_state.vectorstore is None:
-        return "⚠️ Please upload log files first"
-    
     vectorstore = st.session_state.vectorstore
     llm = st.session_state.llm
     
-    # Convert logs to documents with enhanced metadata
-    documents = []
-    for i, log_line in enumerate(logs):
-        if log_line.strip():
-            # Extract metadata from log line
-            metadata = {
-                "line_number": i+1,
-                "source": "uploaded_logs",
-                "timestamp": extract_timestamp_from_log(log_line),
-                "security_indicators": extract_security_indicators(log_line),
-                "ip_addresses": extract_ips_from_log(log_line)
-            }
-            documents.append(Document(page_content=log_line.strip(), metadata=metadata))
-    
-    if not documents:
-        return "⚠️ No valid log data found in uploaded file"
+    # Enhanced system prompt with hybrid approach
+    system_prompt = f"""
+    You are a senior cybersecurity expert working in a SOC with deep knowledge of the MITRE ATT&CK Framework.
 
-    # Enhanced text splitting with better chunking
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=100,
-        separators=["\n", "|", ";", " ", ""]
-    )
-    split_docs = splitter.split_documents(documents) or documents
+    ## Response Strategy:
+    1. **For Log-Specific Questions**: Analyze the provided log context thoroughly
+    2. **For General Questions**: Provide expert cybersecurity guidance even without specific logs
+    3. **For Hybrid Questions**: Combine log analysis with general security principles
+
+    ## Core Capabilities:
+    1. Accurately identify attack techniques using MITRE ATT&CK
+    2. Analyze Indicators of Compromise (IOCs) from logs
+    3. Perform cross-system event correlation
+    4. Provide response recommendations based on best practices
+    5. Answer general cybersecurity questions with expert knowledge
+
+    ## Response Format:
     
-    # Create vectorstore if not exists or update if exists
-    if 'vectorstore' not in st.session_state or st.session_state.vectorstore is None:
-        st.session_state.vectorstore = FAISS.from_documents(split_docs, st.session_state.embedding_model)
+    ### For Log Analysis:
+    **🔍 Log Analysis Results:**
+    1. **Threat Classification**:
+    - Severity Level: [Critical/High/Medium/Low/Info]
+    - MITRE ATT&CK: [Tactic > Technique > Sub-technique] (ID: TXXXX)
+    - Confidence: [High/Medium/Low]
+
+    2. **Evidence from Logs**:
+    - Relevant log entries with line numbers
+    - IOCs found (IPs, domains, hashes, etc.)
+    - Timeline of events
+
+    3. **Immediate Actions**:
+    - Containment steps
+    - Investigation priorities
+    - Monitoring recommendations
+
+    ### For General Questions or No Specific Threats Found:
+    **💡 Security Guidance:**
+    - Provide expert cybersecurity advice
+    - Include best practices and recommendations
+    - Reference relevant frameworks (NIST, MITRE ATT&CK, etc.)
+    - Suggest what to look for in logs
+
+    ## Important Guidelines:
+    - If no specific threats found in logs, still provide valuable security insights
+    - Always explain your reasoning
+    - Suggest additional analysis steps when appropriate
+    - Include both technical and business context
+    """
+
+    # Determine analysis approach based on question type and available data
+    if is_general_question:
+        # For general questions, use both log context and general knowledge
+        general_response = handle_general_security_question(message)
+        
+        # Try to enhance with log context if available
+        try:
+            retriever = vectorstore.as_retriever(
+                search_type="similarity",
+                search_kwargs={"k": 3, "score_threshold": 0.5}
+            )
+            
+            relevant_logs = retriever.get_relevant_documents(message)
+            
+            if relevant_logs:
+                log_context = "\n".join([doc.page_content for doc in relevant_logs])
+                enhanced_prompt = f"""
+                {general_response}
+                
+                **Additional Context from Your Logs:**
+                {log_context}
+                
+                **Enhanced Recommendation:**
+                Based on your uploaded logs, here are specific observations and recommendations:
+                """
+                
+                result = llm(enhanced_prompt)
+                return f"{general_response}\n\n{result}"
+            else:
+                return general_response
+                
+        except Exception as e:
+            return general_response
+    
     else:
-        st.session_state.vectorstore.add_documents(split_docs)
+        # For specific log analysis questions
+        prompt_template = f"""
+        {system_prompt}
 
-    # Enhanced system prompt for SOC analysis
-    system_prompt = """
-    You are an advanced AI SOC (Security Operations Center) Analyst specializing in comprehensive cyber threat detection and analysis. Your mission is to provide detailed, actionable insights from security logs with high accuracy.
+        **Log Context:**
+        {{context}}
 
-    Key capabilities:
-    - Advanced threat pattern recognition (APT, zero-day, lateral movement)
-    - Correlation of events across multiple log sources
-    - Timeline reconstruction of security incidents
-    - Risk scoring based on MITRE ATT&CK framework
-    - Detailed remediation recommendations
+        **User Question:**
+        {{question}}
 
-    **Strict Response Format:**
-    1. **Threat Assessment**:
-       - Classification: [Critical/High/Medium/Low/Informational]
-       - Confidence: [High/Medium/Low]
-       - MITRE ATT&CK Tactic: [Relevant tactic if applicable]
-    
-    2. **Evidence**:
-       - Log excerpts with line numbers
-       - Timeline of events
-       - Indicators of Compromise (IOCs)
-    
-    3. **Actionable Recommendations**:
-       - Immediate containment
-       - Investigation steps
-       - Long-term mitigation
-    
-    4. **Contextual Analysis**:
-       - Potential impact
-       - Business risk assessment
-       - Related historical incidents
-    
-    Provide responses in clear, structured markdown in Thai language.
-    """
+        **Analysis Instructions:**
+        1. Analyze the log context for the specific question asked
+        2. If no specific threats found, provide general security guidance
+        3. Always provide actionable recommendations
+        4. Include confidence levels for your findings
+        """
 
-    prompt_template = f"""
-    {system_prompt}
-
-    **Log Context**:
-    {{context}}
-
-    **User Question**:
-    {{question}}
-
-    **Required Analysis**:
-    - Comprehensive threat evaluation
-    - Detailed evidence from logs
-    - Actionable recommendations
-    - Risk assessment
-    """
-
-    prompt = PromptTemplate(
-        template=prompt_template,
-        input_variables=["context", "question"]
-    )
-
-    # Enhanced retrieval configuration
-    retriever = vectorstore.as_retriever(
-        search_type="mmr",  # Max marginal relevance for better diversity
-        search_kwargs={
-            "k": 8,  # Increased number of retrieved documents
-            "score_threshold": 0.7  # Minimum relevance score
-        }
-    )
-
-    # Configure RAG chain with streaming
-    rag_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=retriever,
-        return_source_documents=True,
-        chain_type_kwargs={
-            "prompt": prompt,
-            "verbose": True
-        }
-    )
-
-    try:
-        # Use callback handler for streaming response
-        st_callback = StreamlitCallbackHandler(st.container())
-        result = rag_chain.invoke(
-            {"query": message},
-            config={"callbacks": [st_callback]}
+        prompt = PromptTemplate(
+            template=prompt_template,
+            input_variables=["context", "question"]
         )
-        
-        # Enhanced result processing
-        response = result.get("result", "No analysis result received")
-        source_docs = result.get("source_documents", [])
-        
-        # Add source references to response
-        if source_docs:
-            response += "\n\n**References:**\n"
-            for i, doc in enumerate(source_docs, 1):
-                line_num = doc.metadata.get('line_number', 'N/A')
-                response += f"{i}. Line {line_num}: {doc.page_content[:200]}...\n"
-        
-        cache_log_analysis(logs, message, response)
-        return response
-        
-    except Exception as e:
-        return f"🔴 Analysis error: {str(e)}\n\nPlease check your Ollama server connection"
+
+        # Configure retriever with more flexible parameters
+        retriever = vectorstore.as_retriever(
+            search_type="mmr",
+            search_kwargs={
+                "k": 10,  # Increased to get more context
+                "score_threshold": 0.3,  # Lowered threshold for broader matching
+                "diversity": 0.7
+            }
+        )
+
+        # Configure RAG chain
+        rag_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=retriever,
+            return_source_documents=True,
+            chain_type_kwargs={
+                "prompt": prompt,
+                "verbose": True
+            }
+        )
+
+        try:
+            # Use callback handler for streaming response
+            st_callback = StreamlitCallbackHandler(st.container())
+            result = rag_chain.invoke(
+                {"query": message},
+                config={"callbacks": [st_callback]}
+            )
+            
+            response = result.get("result", "No analysis result received")
+            source_docs = result.get("source_documents", [])
+            
+            # If no relevant documents found, provide general guidance
+            if not source_docs or len(source_docs) == 0:
+                general_guidance = handle_general_security_question(message)
+                response = f"""
+                **📊 Log Analysis Result:**
+                No specific evidence found in your logs for this query.
+
+                **💡 General Security Guidance:**
+                {general_guidance}
+
+                **🔍 Suggested Next Steps:**
+                1. Check if your logs contain the relevant event types
+                2. Verify log collection is working properly
+                3. Consider expanding log sources
+                4. Review detection rules and alerting
+                """
+            else:
+                # Add source references
+                response += "\n\n**📋 Evidence Sources:**\n"
+                for i, doc in enumerate(source_docs[:5], 1):  # Limit to top 5
+                    line_num = doc.metadata.get('line_number', 'N/A')
+                    preview = doc.page_content[:150] + "..." if len(doc.page_content) > 150 else doc.page_content
+                    response += f"{i}. Line {line_num}: {preview}\n"
+            
+            # Cache the result
+            cache_log_analysis(logs, message, response)
+            return response
+            
+        except Exception as e:
+            # Fallback to general guidance on error
+            general_guidance = handle_general_security_question(message)
+            return f"""
+            **⚠️ Analysis Error:** {str(e)}
+
+            **💡 General Security Guidance:**
+            {general_guidance}
+
+            **🔧 Troubleshooting:**
+            - Check Ollama server connection
+            - Verify log format compatibility
+            - Try rephrasing your question
+            """
 
 # === Helper Functions ===
 def extract_timestamp_from_log(log_line: str) -> Optional[str]:
@@ -921,14 +1127,14 @@ def create_vectorstore(logs: List[str]):
 
 def render_chat_interface():
     """Render the chat interface with ChatGPT/DeepSeek style"""
-    # Add JavaScript for example question clicks
+    # Add JavaScript for example question clicks - FIXED VERSION
     st.markdown("""
     <script>
     function setQuestion(text) {
         const textarea = parent.document.querySelector('textarea[aria-label="Message SOC Analysis AI..."]');
         if (textarea) {
             textarea.value = text;
-            // Dispatch an input event to trigger Streamlit's detection
+            // Dispatch an input event to trigger Streamlit detection
             const event = new Event('input', { bubbles: true });
             textarea.dispatchEvent(event);
         }
@@ -991,25 +1197,33 @@ def render_chat_interface():
             </div>
             """, unsafe_allow_html=True)
     
-    # Example questions
     if not st.session_state.chat_history:
         st.markdown("""
         <div style="text-align: center; margin-top: 40px; color: #666;">
-            <h3>How can I help with your security logs today?</h3>
+            <h3>How can I help with your security analysis today?</h3>
             <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 20px 0;">
         """, unsafe_allow_html=True)
         
+        # Mix of specific and general examples
         examples = [
-            "Identify potential security threats",
-            "Show suspicious IPs", 
-            "Analyze failed logins",
-            "Timeline of events",
-            "Most critical threat?"
+            # Log-specific examples
+            "Identify potential brute force attacks in these logs",
+            "List all IPs with multiple failed login attempts", 
+            "What are the critical security events in these logs?",
+            "Show me timeline of suspicious activities",
+            
+            # General security examples
+            "How to detect phishing attacks?",
+            "What are common indicators of malware?",
+            "Best practices for incident response",
+            "Explain MITRE ATT&CK framework"
         ]
         
+        # FIXED: Use proper escaping for onclick attribute
         for example in examples:
+            example_escaped = example.replace("'", "&#39;").replace('"', "&quot;")
             st.markdown(f"""
-            <div class="example-question" onclick="setQuestion('{example}')">
+            <div class="example-question" onclick="setQuestion('{example_escaped}')">
                 {example}
             </div>
             """, unsafe_allow_html=True)
@@ -1046,7 +1260,7 @@ def render_chat_interface():
         handle_user_query(user_input)
         st.rerun()
     
-    # JavaScript สำหรับการกด Enter (optional - form already handles this)
+    # JavaScript for Enter key handling - FIXED VERSION
     st.markdown("""
     <script>
     document.addEventListener('DOMContentLoaded', function() {
