@@ -1,79 +1,119 @@
-# === Core Framework ===
-streamlit>=1.28.0
-streamlit-chat>=0.1.1
+# ============================================================================
+# SOC Analysis AI Assistant - Dependencies
+# ============================================================================
+# Core framework and UI components for the cybersecurity log analysis system
+# Compatible with Python 3.8+ (3.10+ recommended)
+# ============================================================================
 
-# === LangChain Ecosystem ===
-langchain>=0.1.0
-langchain-community>=0.0.20
-langchain-core>=0.1.0
-langchain-text-splitters>=0.0.1
-langchain-huggingface>=0.0.3
+# === CORE FRAMEWORK & UI ===
+# Web interface and chat components
+streamlit>=1.28.0,<2.0.0                # Primary web framework
+streamlit-chat>=0.1.1,<1.0.0           # Chat interface components
 
-# === Ollama Integration ===
-langchain-ollama>=0.1.0
+# === AI & MACHINE LEARNING CORE ===
+# LangChain ecosystem for RAG implementation
+langchain>=0.1.0,<0.2.0                # Core LangChain framework
+langchain-community>=0.0.20,<0.1.0     # Community integrations
+langchain-core>=0.1.0,<0.2.0           # Core LangChain components
+langchain-text-splitters>=0.0.1,<0.1.0 # Text processing utilities
+langchain-huggingface>=0.0.3,<0.1.0    # HuggingFace integration
 
-# === Vector Store & Embeddings ===
-faiss-cpu>=1.7.4
-sentence-transformers>=2.2.2
-huggingface-hub>=0.17.0
-transformers>=4.35.0
+# Local LLM integration
+langchain-ollama>=0.1.0,<0.2.0         # Ollama integration for local LLMs
 
-# === Data Processing ===
-pandas>=2.0.0
-numpy>=1.24.0
-plotly>=5.15.0
+# === VECTOR STORAGE & EMBEDDINGS ===
+# High-performance vector search and text embeddings
+faiss-cpu>=1.7.4,<2.0.0               # Facebook AI Similarity Search (CPU)
+sentence-transformers>=2.2.2,<3.0.0    # Sentence embedding models
+huggingface-hub>=0.17.0,<1.0.0        # Model hub access
+transformers>=4.35.0,<5.0.0           # Transformer models
 
-# === Distributed Processing & Caching ===
-celery>=5.3.0
-redis>=4.5.0
+# === DATA PROCESSING & ANALYSIS ===
+# Core data manipulation and visualization
+pandas>=2.0.0,<3.0.0                  # Data manipulation and analysis
+numpy>=1.24.0,<2.0.0                  # Numerical computing
+plotly>=5.15.0,<6.0.0                 # Interactive visualizations
 
-# === Text Processing ===
-regex>=2023.10.3
+# === DISTRIBUTED PROCESSING & CACHING ===
+# Enterprise-scale processing and performance optimization
+celery>=5.3.0,<6.0.0                  # Distributed task processing
+redis>=4.5.0,<5.0.0                   # In-memory data store and cache
 
-# === Web & API ===
-requests>=2.31.0
-urllib3>=2.0.0
+# === TEXT PROCESSING & UTILITIES ===
+# Advanced text processing and pattern matching
+regex>=2023.10.3                      # Enhanced regular expressions
+tqdm>=4.66.0,<5.0.0                   # Progress bars
+colorama>=0.4.6,<1.0.0                # Colored terminal output
 
-# === Environment & Configuration ===
-python-dotenv>=1.0.0
+# === NETWORK & API UTILITIES ===
+# HTTP requests and web utilities
+requests>=2.31.0,<3.0.0               # HTTP library
+urllib3>=2.0.0,<3.0.0                 # URL handling utilities
 
-# === System & Monitoring ===
-psutil>=5.9.0
+# === CONFIGURATION & ENVIRONMENT ===
+# Environment and configuration management
+python-dotenv>=1.0.0,<2.0.0          # Environment variable loading
+pydantic>=2.4.0,<3.0.0               # Data validation and settings
 
-# === Async Support ===
-asyncio-compat>=0.1.2
+# === SYSTEM MONITORING & PERFORMANCE ===
+# System resource monitoring and optimization
+psutil>=5.9.0,<6.0.0                 # System and process utilities
 
-# === Utilities ===
-tqdm>=4.66.0
-colorama>=0.4.6
+# === LOGGING & AUDIT ===
+# Enhanced logging capabilities
+loguru>=0.7.2,<1.0.0                 # Advanced logging framework
 
-# === Data Validation ===
-pydantic>=2.4.0
+# === TYPE HINTS & DEVELOPMENT ===
+# Type checking and development utilities
+typing-extensions>=4.7.0,<5.0.0      # Extended type hints
 
-# === Hashing (built-in but explicit for clarity) ===
-hashlib2>=1.3.1
+# ============================================================================
+# OPTIONAL DEPENDENCIES
+# ============================================================================
+# Uncomment sections below based on your deployment requirements
 
-# === JSON Processing (built-in but listed for completeness) ===
-# json - built-in
-# csv - built-in
-# io - built-in
-# datetime - built-in
-# os - built-in
-# warnings - built-in
+# === GPU ACCELERATION (Optional) ===
+# Uncomment for GPU-accelerated embeddings and faster processing
+# torch>=2.0.0,<3.0.0                 # PyTorch for GPU acceleration
+# faiss-gpu>=1.7.4,<2.0.0            # FAISS with GPU support
 
-# === Development & Testing (Optional) ===
-pytest>=7.4.0
-pytest-cov>=4.1.0
-black>=23.9.0
-flake8>=6.0.0
-mypy>=1.6.0
+# === DEVELOPMENT & TESTING (Optional) ===
+# Uncomment for development environment
+# pytest>=7.4.0,<8.0.0               # Testing framework
+# pytest-cov>=4.1.0,<5.0.0           # Coverage reporting
+# black>=23.9.0,<24.0.0              # Code formatting
+# flake8>=6.0.0,<7.0.0               # Code linting
+# mypy>=1.6.0,<2.0.0                 # Static type checking
+# pre-commit>=3.0.0,<4.0.0           # Git hooks for code quality
 
-# === Logging ===
-loguru>=0.7.2
+# === ADDITIONAL SECURITY (Optional) ===
+# Uncomment for enhanced security features
+# cryptography>=41.0.0,<42.0.0       # Encryption utilities
+# bcrypt>=4.0.0,<5.0.0               # Password hashing
+# pyotp>=2.8.0,<3.0.0                # One-time passwords (2FA)
 
-# === Type Hints ===
-typing-extensions>=4.7.0
+# === EXPORT & REPORTING (Optional) ===
+# Uncomment for advanced reporting capabilities
+# reportlab>=4.0.0,<5.0.0            # PDF generation
+# openpyxl>=3.1.0,<4.0.0             # Excel file handling
+# python-docx>=0.8.11,<1.0.0        # Word document generation
 
-# === Optional: GPU Support for embeddings ===
-# torch>=2.0.0  # Uncomment if you want GPU acceleration
-# sentence-transformers[gpu]  # Uncomment for GPU support
+# ============================================================================
+# INSTALLATION NOTES
+# ============================================================================
+# 
+# Basic Installation:
+#   pip install -r requirements.txt
+#
+# With GPU Support:
+#   pip install -r requirements.txt torch faiss-gpu
+#
+# Development Environment:
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# For specific Python versions, ensure compatibility:
+#   Python 3.8+: All dependencies supported
+#   Python 3.10+: Recommended for optimal performance
+#   Python 3.11+: Latest features and performance improvements
+#
+# ============================================================================
